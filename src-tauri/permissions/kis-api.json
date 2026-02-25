@@ -1,0 +1,14 @@
+{
+  "identifier": "allow-kis-api",
+  "description": "Allow fetching from Korea Investment & Securities API",
+  "permissions": [
+    "http:allow-fetch"
+  ],
+  "scope": {
+    "allow": [
+      {
+        "url": "https://openapi.koreainvestment.com:9443/*"
+      }
+    ]
+  }
+}

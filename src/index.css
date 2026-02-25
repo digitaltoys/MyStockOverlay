@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+:root {
+  font-family: Pretendard, Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light dark;
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #242424;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  --ticker-font: Pretendard;
+  --ticker-up-color: #ef4444; /* red-500 */
+  --ticker-down-color: #3b82f6; /* blue-500 */
+  --ticker-neutral-color: #a1a1aa; /* zinc-400 */
+}
+
+/* Set transparent background for windows acting as tickers */
+html.transparent-ticker,
+html.transparent-ticker body {
+  background-color: transparent !important;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  display: flex;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+#root {
+  width: 100%;
+}

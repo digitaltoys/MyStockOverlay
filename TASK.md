@@ -1,0 +1,21 @@
+# MyStockOverlay 프로젝트 진행 상황
+
+- [x] **프로젝트 환경 초기화**
+  - [x] Vite + React + TS 프로젝트 생성 (`d:\\prj3\\MyStockOverlay`)
+  - [x] Tauri 프로젝트 초기화 연동
+  - [x] 필요 패키지 설치 (`tailwindcss`, `react-router-dom`, `lucide-react` 등)
+- [x] **Tauri 백엔드 설정**
+  - [x] 메인 창(제어판) 설정 및 종목 관리 용도로 지정
+  - [x] 개별 티커용 투명, 창틀(Decoration) 제거, 항상 위(Always-on-top) 창을 생성하는 Tauri 명령어 구현 (`main.rs`의 `spawn_ticker_window`)
+  - [x] 티커 창에 대해 마우스 이벤트 통과 (Click-through) 적용 (`set_ignore_cursor_events(true)`)
+- [/] **프론트엔드 개발**
+  - [x] TailwindCSS 환경 및 전역 변수 설정 (`index.css` 및 `vite.config.ts`)
+  - [x] 메인 제어판 창과 티커 창을 구분해 띄우기 위한 React Router 분기 처리
+  - [x] KIS API Key 설정, 종목 관리, UI 커스터마이징을 위한 설정 UI 및 저장 로직 구현 (`ControlPanel.tsx`)
+  - [x] 컴포넌트 모듈화 구성 (`TickerWidget`, `TickerCard`, `ControlPanel`)
+  - [x] CSS 변수와 Tailwind를 활용해 동적 디자인 적용이 가능한 `TickerCard` 컴포넌트 구현
+  - [x] 한국투자증권(KIS) API 인증 및 토큰 발급 로직 연동 (`kisApi.ts`)
+  - [x] 실시간 체결가 데이터 수신을 위한 KIS 웹소켓 채널(`H0STCNT0`) 연결 및 상태 반영
+- [ ] **고급 기능 및 마무리**
+  - [ ] 사용자가 티커 창을 마우스로 잡고 이동할 수 있도록, 전역 단축키(예: Ctrl+Shift+L)를 통한 마우스 패스쓰루 토글(On/Off) 기능 구현
+  - [ ] 실제 데이터를 이용한 육안 테스트 (투명도, 항상 위, 패스쓰루 적용 점검)

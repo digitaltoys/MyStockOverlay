@@ -1,0 +1,38 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": [
+    "*"
+  ],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    {
+      "identifier": "http:allow-fetch",
+      "allow": [
+        {
+          "url": "https://openapi.koreainvestment.com:9443/*"
+        }
+      ]
+    },
+    {
+      "identifier": "http:allow-fetch-send",
+      "allow": [
+        {
+          "url": "https://openapi.koreainvestment.com:9443/*"
+        }
+      ]
+    },
+    {
+      "identifier": "http:allow-fetch-read-body",
+      "allow": [
+        {
+          "url": "https://openapi.koreainvestment.com:9443/*"
+        }
+      ]
+    },
+    "core:window:default",
+    "core:webview:default"
+  ]
+}
