@@ -11,12 +11,34 @@
 ## ✨ 핵심 기능
 1. **투명 배경 및 타이틀바 제거**: 화면 공간을 낭비하지 않는 미니멀한 Ticker UI.
 2. **항상 위 보이기 (Always on top)**: 어떤 상황에서도 최상단 창에 고정.
-3. **마우스 패스쓰루 (Click-through)**: 티커 영역을 클릭해도 이벤트가 무시되고 밑에 있는 윈도우가 클릭됩니다. 
-4. **커스터마이징 UI**: 폰트, 크기, 상승/하락 텍스트 컬러 등을 쉽게 수정할 수 있는 CSS 변수 구조 적용.
+3. **마우스 패스쓰루 및 단축키 토글**: 평소에는 마우스 클릭 이벤트를 무시하며, 전역 단축키(`Ctrl+Shift+L`)로 언제든 드래그 모드를 토글할 수 있습니다.
+4. **전역 스케일(Scale) 조절**: 제어판 슬라이더를 통해 모든 티커의 글자 및 전체 크기를 0.5배~2.0배까지 실시간으로 조절할 수 있습니다.
+5. **빠른 상세 페이지 오픈**: 드래그 모드 상태에서 티커 종목을 더블 클릭하면 자동으로 네이버 금융 상세 페이지를 열어줍니다.
+6. **업종 지수 지원**: 코스피, 코스닥 등 지수 데이터를 스마트하게 식별하여 구독 및 파싱합니다.
+7. **커스터마이징 UI**: 폰트, 크기, 상승/하락 텍스트 컬러 등을 쉽게 수정할 수 있는 CSS 변수 구조 적용.
 
 ## 🛠 기술 스택
-- **Framework**: Tauri 2 (Rust 기반 플랫폼)
-- **Frontend**: React 19 + TypeScript + Vite
-- **Styling**: Tailwind CSS v4 + Lucide React (아이콘)
-- **Data Fetching / API**: 한국투자증권(Korea Investment & Securities) 오픈 API (REST & WebSocket)
-- **Router**: React Router DOM (메인 설정 화면과 티커 창 분할)
+
+### 🏗️ Core Framework & Language
+*   **Tauri v2 (Rust)**: 앱의 전체 구조와 시스템 제어(창 생성, 전역 단축키 수신, 항상 위 설정, 마우스 이벤트 제어 등)를 담당하는 백엔드 프레임워크입니다.
+*   **React 19**: 사용자 인터페이스를 구축하기 위한 프론트엔드 라이브러리입니다.
+*   **TypeScript**: 코드의 안정성과 가독성을 높이기 위해 프론트/백엔드 모두에서 사용 중인 주력 언어입니다.
+
+### 🎨 Styling & UI
+*   **Tailwind CSS v4**: 유틸리티 우선(Utility-first) 방식의 최신 스타일링 프레임워크로, 미니멀하고 세련된 다크 모드 UI를 구현했습니다.
+*   **Lucide React**: 티커와 컨트롤 패널에 사용된 깔끔한 벡터 아이콘 세트입니다.
+*   **Glassmorphism**: 투명 배경과 `backdrop-blur` 효과를 이용해 배경 유리에 비치는 듯한 프리미엄 디자인을 적용했습니다.
+
+### 🛠️ Frontend Ecosystem
+*   **Vite**: 초고속 빌드 및 개발 환경 구성을 위한 빌드 도구입니다.
+*   **React Router DOM v7**: 메인 설정창(`ControlPanel`)과 개별 주식 티커(`TickerWidget`)를 경로별로 나누어 독립된 창으로 띄우기 위해 사용했습니다.
+
+### 🔌 Tauri Plugins (핵심 기능 보조)
+*   **tauri-plugin-global-shortcut**: `Ctrl+Shift+L` 전역 단축키를 감지하여 마우스 패스쓰루를 켜고 끕니다.
+*   **tauri-plugin-window-state**: 티커 창들의 위치와 크기를 자동으로 기억하고 다음 실행 시 복원합니다.
+*   **tauri-plugin-opener**: 티커 더블 클릭 시 시스템 기본 브라우저로 네이버 금융 상세 페이지를 엽니다.
+
+### 📊 Data & API
+*   **한국투자증권(KIS) Open API**: 실시간 주가 및 업종 지수 데이터를 수신하기 위한 공식 API입니다.
+    *   **REST API**: 초기 데이터 로드용.
+    *   **WebSocket**: 실시간 체결가 수신용 (단일 소켓 아키텍처).

@@ -2,6 +2,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
+#[cfg(target_os = "windows")]
+unsafe fn force_topmost_win32(hwnd: *mut core::ffi::c_void) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE,
+    };
+    SetWindowPos(
+        hwnd,
+        HWND_TOPMOST,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING,
+    );
+}
+
 static IS_LOCKED: AtomicBool = AtomicBool::new(true);
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -17,6 +33,8 @@ async fn spawn_ticker_window(
     ignore_mouse: bool,
     x: Option<f64>,
     y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
 ) -> Result<(), String> {
     let window_label = format!("ticker_{}", symbol.replace(".", "_"));
 
@@ -30,9 +48,11 @@ async fn spawn_ticker_window(
     let mut window_builder =
         WebviewWindowBuilder::new(&app_handle, &window_label, WebviewUrl::App(url.into()))
             .title(format!("Ticker - {}", symbol))
-            .inner_size(180.0, 60.0)
+            .inner_size(width.unwrap_or(180.0), height.unwrap_or(60.0))
             .transparent(true)
             .decorations(false)
+            .shadow(false)
+            .maximizable(false)
             .always_on_top(true)
             .skip_taskbar(true)
             .resizable(true)
@@ -46,11 +66,15 @@ async fn spawn_ticker_window(
 
     let window_clone = window.clone();
     window.on_window_event(move |event| {
-        if matches!(
-            event,
-            tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
-        ) {
-            let _ = window_clone.emit("window-moved", ());
+        match event {
+            tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                let _ = window_clone.emit("window-moved", ());
+            }
+            // 태스크바 클릭 등으로 포커스를 잃으면 always-on-top 재설정
+            tauri::WindowEvent::Focused(false) => {
+                let _ = window_clone.set_always_on_top(true);
+            }
+            _ => {}
         }
     });
 
@@ -77,11 +101,17 @@ async fn close_window(app_handle: tauri::AppHandle, label: String) -> Result<(),
 
 #[tauri::command]
 async fn reset_window_state(app_handle: tauri::AppHandle, label: String) -> Result<(), String> {
-    use tauri::{LogicalSize, LogicalPosition, Manager};
+    use tauri::{LogicalPosition, LogicalSize, Manager};
 
     if let Some(window) = app_handle.get_webview_window(&label) {
-        let _ = window.set_size(tauri::Size::Logical(LogicalSize { width: 180.0, height: 60.0 }));
-        let _ = window.set_position(tauri::Position::Logical(LogicalPosition { x: 100.0, y: 100.0 }));
+        let _ = window.set_size(tauri::Size::Logical(LogicalSize {
+            width: 180.0,
+            height: 60.0,
+        }));
+        let _ = window.set_position(tauri::Position::Logical(LogicalPosition {
+            x: 100.0,
+            y: 100.0,
+        }));
     }
     Ok(())
 }
@@ -111,6 +141,12 @@ async fn broadcast_border_toggle(app_handle: tauri::AppHandle, hide: bool) -> Re
 }
 
 #[tauri::command]
+async fn broadcast_scale_changed(app_handle: tauri::AppHandle, scale: f64) -> Result<(), String> {
+    let _ = app_handle.emit("scale-changed", scale);
+    Ok(())
+}
+
+#[tauri::command]
 async fn broadcast_ticker_data(
     app_handle: tauri::AppHandle,
     symbol: String,
@@ -133,6 +169,7 @@ async fn broadcast_ticker_error(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -174,6 +211,22 @@ pub fn run() {
                 });
             }
 
+            // 티커 창 항상 최상위 유지 — Win32 직접 호출 (깜빡임 없음)
+            let topmost_handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                for (label, window) in topmost_handle.webview_windows() {
+                    if label.starts_with("ticker_") {
+                        #[cfg(target_os = "windows")]
+                        if let Ok(hwnd) = window.hwnd() {
+                            unsafe { force_topmost_win32(hwnd.0) };
+                        }
+                        #[cfg(not(target_os = "windows"))]
+                        let _ = window.set_always_on_top(true);
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -183,6 +236,7 @@ pub fn run() {
             reset_window_state,
             toggle_lock_from_frontend,
             broadcast_border_toggle,
+            broadcast_scale_changed,
             broadcast_ticker_data,
             broadcast_ticker_error
         ])

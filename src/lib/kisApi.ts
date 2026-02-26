@@ -1,4 +1,5 @@
 import { fetch } from '@tauri-apps/plugin-http';
+import { KisAuthStorage } from './storage';
 
 // KIS API Base URL (실전투자)
 const KIS_API_BASE = "https://openapi.koreainvestment.com:9443";
@@ -13,47 +14,36 @@ export interface KisTickerData {
 }
 
 /**
+ * 업종 지수(KOSPI, KOSDAQ 등)인지 확인
+ */
+export function isIndexSymbol(symbol: string): boolean {
+  return ["0001", "1001", "2001"].includes(symbol);
+}
+
+/**
  * Access Token 발급 로직
  */
 export async function getKisAccessToken(appKey: string, appSecret: string): Promise<string> {
-  // 로컬 스토리지 캐싱 확인 (간단 구현)
-  const cached = localStorage.getItem("kis_access_token");
-  const cachedTime = localStorage.getItem("kis_token_time");
-  
-  if (cached && cachedTime) {
-    const now = Date.now();
-    const age = now - parseInt(cachedTime);
-    // 토큰 유효기간이 보통 24시간이므로 12시간 내외면 재사용
-    if (age < 12 * 60 * 60 * 1000) {
-      return cached;
-    }
+  const auth = KisAuthStorage.get();
+  if (auth) {
+    const age = Date.now() - auth.tokenTime;
+    if (age < 12 * 60 * 60 * 1000) return auth.accessToken;
   }
 
   const response = await fetch(`${KIS_API_BASE}/oauth2/tokenP`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      grant_type: "client_credentials",
-      appkey: appKey,
-      appsecret: appSecret,
-    }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ grant_type: "client_credentials", appkey: appKey, appsecret: appSecret }),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error("KIS Token Error:", response.status, errorText);
     throw new Error(`Access Token 발급 실패: ${response.status} ${errorText}`);
   }
 
   const data = await response.json();
-  const token = data.access_token;
-  
-  localStorage.setItem("kis_access_token", token);
-  localStorage.setItem("kis_token_time", Date.now().toString());
-  
-  return token;
+  KisAuthStorage.set({ accessToken: data.access_token, tokenTime: Date.now() });
+  return data.access_token;
 }
 
 /**
@@ -88,15 +78,24 @@ export async function getKisWsApprovalKey(appKey: string, appSecret: string): Pr
 export async function fetchCurrentPrice(appKey: string, appSecret: string, symbol: string): Promise<KisTickerData> {
   const accessToken = await getKisAccessToken(appKey, appSecret);
 
+  const isIndex = isIndexSymbol(symbol);
+  
+  const url = isIndex
+    ? `https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/inquire-index-price?fid_cond_mrkt_div_code=U&fid_input_iscd=${symbol}`
+    : `https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/inquire-price?fid_cond_mrkt_div_code=J&fid_input_iscd=${symbol}`;
+    
+  // FHPUP02100000 : 국내주식 업종지수 현재가
+  const trId = isIndex ? "FHPUP02100000" : "FHKST01010100";
+
   const response = await fetch(
-    `https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/inquire-price?fid_cond_mrkt_div_code=J&fid_input_iscd=${symbol}`,
+    url,
     {
       method: "GET",
       headers: {
         "authorization": `Bearer ${accessToken}`,
         "appkey": appKey,
         "appsecret": appSecret,
-        "tr_id": "FHKST01010100",
+        "tr_id": trId,
         "content-type": "application/json",
       },
     }
@@ -110,8 +109,9 @@ export async function fetchCurrentPrice(appKey: string, appSecret: string, symbo
   const data = await response.json();
   const output = data.output;
 
-  const currentPrice = parseInt(output.stck_prpr) || 0;
-  const changeRate = parseFloat(output.prdy_ctrt) || 0;
+  // FHPUP02100000 의 응답 필드는 bstp_nmix_prpr, bstp_nmix_prdy_ctrt
+  const currentPrice = parseFloat(isIndex ? output.bstp_nmix_prpr : output.stck_prpr) || 0;
+  const changeRate = parseFloat(isIndex ? output.bstp_nmix_prdy_ctrt : output.prdy_ctrt) || 0;
   // prdy_vrss_sign: 1=상한, 2=상승, 3=보합, 4=하한, 5=하락
   const sign = output.prdy_vrss_sign;
 
@@ -192,22 +192,34 @@ export function getKisWsSubscriptionMessage(approvalKey: string, symbol: string,
 /**
  * 실시간 체결가 데이터 파싱 (KIS 포맷 기반)
  */
-export function parseTickerData(symbol: string, rawData: string): KisTickerData {
+export function parseTickerData(symbol: string, rawData: string, trId: string = "H0STCNT0"): KisTickerData {
   // 실제 데이터는 '데이터구분|종목코드|실제데이터' 형태로 옴
   const parts = rawData.split('|');
   if (parts.length < 4) throw new Error("Invalid WS data format");
   
   const details = parts[3].split('^');
   
-  // H0STCNT0 실데이터 파싱 구조 판별 (스크린샷 기반)
-  // [0]종목코드, [1]체결시간, [2]현재가, [3]전일대비부호, [4]전일대비금액, [5]전일대비율, [6]...
-  const parsedPrice = parseInt(details[2]);
-  const parsedRate = parseFloat(details[5]);
+  let parsedPrice = 0;
+  let parsedRate = 0;
+  let diffSign = "3";
+
+  if (trId === "H0STCNI0") {
+    // ==== 업종 지수 (H0STCNI0) 파싱 로직 ====
+    // [0]업종코드 [1]지수일자 [2]지수시간 [3]전일대비부호 [4]전일대비 [5]전일대비율 [6]업종현재지수 [7]...
+    // KIS API 공식 문서 기준: 실시간업종지수
+    parsedPrice = parseFloat(details[6]); 
+    parsedRate = parseFloat(details[5]);
+    diffSign = details[3];
+  } else {
+    // ==== 개별 주식 (H0STCNT0 / H0NXCNT0) 파싱 로직 ====
+    // [0]종목코드, [1]체결시간, [2]현재가, [3]전일대비부호, [4]전일대비금액, [5]전일대비율, [6]...
+    parsedPrice = parseFloat(details[2]);
+    parsedRate = parseFloat(details[5]);
+    diffSign = details[3];
+  }
   
-  const currentPrice = isNaN(parsedPrice) ? details[2] || "N/A" : parsedPrice;
+  const currentPrice = isNaN(parsedPrice) ? (trId === "H0STCNI0" ? details[6] : details[2]) || "N/A" : parsedPrice;
   const changeRate = isNaN(parsedRate) ? details[5] || "0" : parsedRate;
-  
-  const diffSign = details[3]; // 1:상한, 2:상승, 3:보합, 4:하한, 5:하락
   
   return {
     symbol,

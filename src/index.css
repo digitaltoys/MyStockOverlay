@@ -20,20 +20,32 @@
   --ticker-neutral-color: #a1a1aa; /* zinc-400 */
 }
 
-/* Set transparent background for windows acting as tickers */
+/* 티커 창: 투명 배경 */
 html.transparent-ticker,
 html.transparent-ticker body {
   background-color: transparent !important;
   overflow: hidden;
+  min-width: 0 !important;
+  min-height: 0 !important;
+}
+
+/* 네이티브 스크롤바 완전 숨김 (컨트롤 패널의 scrollable div에서 커스텀 오버레이로 대체) */
+*::-webkit-scrollbar {
+  display: none;
+}
+
+* {
+  scrollbar-width: none;
 }
 
 body {
   margin: 0;
   display: flex;
-  min-width: 320px;
-  min-height: 100vh;
+  overflow: hidden;
+  height: 100vh;
 }
 
 #root {
   width: 100%;
+  height: 100%;
 }
