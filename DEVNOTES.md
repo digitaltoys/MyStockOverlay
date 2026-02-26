@@ -230,20 +230,41 @@ useEffect(() => {
 
 ---
 
+---
+
 ## 9. 윈도우 상태 저장 (위치/크기)
 
 ### 사용한 방법
-- Rust 백엔드에서 `Moved` / `Resized` 이벤트 감지 → 프론트로 `window-moved` 이벤트 emit
-- 프론트에서 300ms 디바운스 후 `localStorage`에 `{ x, y }` 저장
-- 창 생성 시 저장된 위치를 읽어 `spawn_ticker_window` 커맨드에 전달
+- `tauri-plugin-window-state` 플러그인을 사용하여 모든 티커 창과 메인 창의 위치, 크기, 가시성 등을 자동으로 로컬에 저장하고 복원함.
+- **주의**: 티커 창은 사용자 지정 라벨(`ticker_$symbol`)을 가지므로, 개별 창마다 독립적인 상태가 유지됨.
 
 ```rust
-// 창 이동/리사이즈 감지
-window.on_window_event(move |event| {
-    if matches!(event, tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)) {
-        let _ = window_clone.emit("window-moved", ());
+// lib.rs
+.plugin(tauri_plugin_window_state::Builder::new().build())
+```
+
+---
+
+## 10. 전역 단축키를 이용한 마우스 패스쓰루 토글
+
+### 문제
+티커 창이 항상 위에 떠 있으면서도 필요할 때만 마우스 조작이 가능해야 함.
+
+### 해결
+- `tauri-plugin-global-shortcut` 플러그인 사용.
+- `Ctrl+Shift+L` 키 조합을 감지하여 `IS_LOCKED` 원자적(Atomic) 변수 상태를 반전.
+- 모든 티커 창을 루프하며 `set_ignore_cursor_events(!is_locked)`를 호출.
+
+```rust
+app.global_shortcut().on_shortcut(ctrl_shift_l, move |app, _shortcut, event| {
+    if event.state() == ShortcutState::Pressed {
+        let new_lock = !IS_LOCKED.load(Ordering::SeqCst);
+        IS_LOCKED.store(new_lock, Ordering::SeqCst);
+        for (_, window) in app.webview_windows() {
+            let _ = window.set_ignore_cursor_events(new_lock);
+        }
     }
-});
+})?;
 ```
 
 ---
@@ -299,9 +320,37 @@ React의 최상위 렌더링 영역에 `transform: scale(n)` 스타일을 적용
 2.  **Transform Origin**: 배율 조정 시 위젯이 화면에서 튀어나가거나 위치가 어긋나지 않도록 `transformOrigin: "center"`를 설정하여 중심을 기준으로 크기가 변하게 함.
 3.  **성능**: 단순 텍스트 렌더링이므로 CSS Transform을 통한 확대/축소는 GPU 가속을 받아 매우 부드럽고 가볍게 작동함.
 
-```tsx
-// TickerWidget.tsx
-<div style={{ transform: `scale(${scale})`, transformOrigin: "center" }}>
-   <TickerCard ... />
-</div>
 ```
+
+---
+
+## 13. 주식 데이터 소스(API) 비교 분석 (2026-02-26)
+
+### 주요 API별 특징 (국내 증권사 포함)
+| API | 장점 | 단점 | 실시간성 | 방식 |
+| :--- | :--- | :--- | :--- | :--- |
+| **한국투자증권 (KIS)** | 공식 REST API 선두주자, 국내 주식 최적화 | 인증 절차 다소 번거로움 | **실시간** | REST, WS |
+| **키움증권 (차세대)** | 최대 사용자 층, 2025 신규 REST API 출시 | 일부 기능(해외주식 등) 순차 지원 | **실시간** | REST, WS |
+| **LS증권 (구 이베스트)** | 개발자 친화적 선구자, 안정적인 REST 인터페이스 | 사명 변경 후 인지도 변화 중 | **실시간** | REST, WS |
+| **신한투자증권** | OAuth 2.0 기반 현대적 API 구성 | 커뮤니티 예제 상대적 부족 | 준 실시간 | REST |
+| **Yahoo Finance** | 전세계 주식, 인증 불필요, 구현 쉬움 | 비공식, 지연 데이터, 차단 위험 | 지연 | REST |
+
+### 활용 전략 (2026-02-26 업데이트)
+- **최우선 (KIS)**: 현재 본 프로젝트에서 사용 중. 플랫폼 제약이 없고 웹 기술과 가장 궁합이 좋음.
+- **강력한 대안 (키움 차세대)**: 키움증권이 2025년에 출시한 REST API는 기존 Windows 전용(OCX)에서 탈피하여 Mac/Linux/Web 어디서든 사용 가능함. 유튜버나 블로거 등 커뮤니티 예제가 가장 많음.
+- **안정성 (LS증권)**: 과거 이베스트 시절부터 API에 진심이었던 곳으로, REST 기반 시스템 트레이딩에 잔뼈가 굵은 개발자들이 선호함.
+- **결론**: 본 프로젝트(Tauri)는 웹 기반 기술을 사용하므로, **KIS, 키움(신규), LS** 세 곳이 가장 적합한 후보군임.
+
+---
+
+## 14. 실전(Real) vs 모의투자(Virtual) API 분리 아키텍처
+
+### 구조 및 목적
+보안과 유지보수 편의를 위해 소스 코드를 물리적으로 분리했습니다.
+- **`kisApi.ts`**: 실전 투자용 엔드포인트 (`openapi.koreainvestment.com:9443`) 및 로직.
+- **`kisVirtualApi.ts`**: 모의 투자용 엔드포인트 (`openapivts.koreainvestment.com:29443`) 및 로직.
+
+### 개발 팁
+1. **함수 인터페이스 통일**: 두 파일의 주요 함수(`getKisAccessToken`, `fetchCurrentPrice` 등) 시그니처를 동일하게 유지하여, 호출부(`WsManager` 등)에서 `isVirtual` 상태에 따라 삼항 연산자 등으로 쉽게 교체 가능하게 구성했습니다.
+2. **토큰 캐싱**: `KisAuthStorage`를 공유하더라도, 모드 전환 시에는 반드시 `KisAuthStorage.clear()`를 호출하여 새로운 서버로부터 인증 토큰을 다시 발급받아야 인증 오류를 방지할 수 있습니다.
+3. **웹소켓 포트**: 실전(21000)과 모의(31000) 포트 번호가 다르므로 `WsManager.tsx`에서 이를 정확히 분기해야 합니다.

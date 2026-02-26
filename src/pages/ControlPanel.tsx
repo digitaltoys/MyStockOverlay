@@ -3,16 +3,21 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Plus, Trash2, ExternalLink, Shield, Lock, Unlock, Keyboard, Settings, Monitor } from "lucide-react";
 import WsManager from "../components/WsManager";
-import { Config } from "../lib/storage";
+import { Config, KisAuthStorage } from "../lib/storage";
 
 export default function ControlPanel() {
-  const [appKey, setAppKey] = useState("");
-  const [appSecret, setAppSecret] = useState("");
+  const [realAppKey, setRealAppKey] = useState("");
+  const [realAppSecret, setRealAppSecret] = useState("");
+  const [virtualAppKey, setVirtualAppKey] = useState("");
+  const [virtualAppSecret, setVirtualAppSecret] = useState("");
   const [tickerSymbols, setTickerSymbols] = useState<string[]>([]);
   const [newSymbol, setNewSymbol] = useState("");
   const [isLocked, setIsLocked] = useState(true);
   const [hideBorder, setHideBorder] = useState(false);
   const [scale, setScale] = useState(1.0);
+  const [enableKis, setEnableKis] = useState(true);
+  const [enableFallback, setEnableFallback] = useState(true);
+  const [isVirtual, setIsVirtual] = useState(false);
 
   const hasAutoLaunched = useRef(false);
   const launchingSymbols = useRef(new Set<string>());
@@ -41,11 +46,17 @@ export default function ControlPanel() {
   useEffect(() => {
     // Load saved settings
     const config = Config.get();
-    if (config.appKey) setAppKey(config.appKey);
-    if (config.appSecret) setAppSecret(config.appSecret);
+    // 실/모의 키 로드
+    setRealAppKey(config.realAppKey || config.appKey || "");
+    setRealAppSecret(config.realAppSecret || config.appSecret || "");
+    setVirtualAppKey(config.virtualAppKey || config.appKey || "");
+    setVirtualAppSecret(config.virtualAppSecret || config.appSecret || "");
     if (config.symbols.length) setTickerSymbols(config.symbols);
     setHideBorder(config.hideBorder);
     setScale(config.scale || 1.0);
+    setEnableKis(config.enableKis !== false);
+    setEnableFallback(config.enableFallback !== false);
+    setIsVirtual(!!config.isVirtual);
 
     const initialLockState = config.isLocked;
     setIsLocked(initialLockState);
@@ -83,9 +94,16 @@ export default function ControlPanel() {
     };
   }, []);
 
-  const saveConfig = () => {
-    Config.set({ appKey, appSecret });
-    alert("설정이 저장되었습니다.");
+  const saveRealConfig = () => {
+    Config.set({ realAppKey, realAppSecret });
+    KisAuthStorage.clear();
+    alert("실계좌 인증 정보가 저장되었습니다.");
+  };
+
+  const saveVirtualConfig = () => {
+    Config.set({ virtualAppKey, virtualAppSecret });
+    KisAuthStorage.clear();
+    alert("모의투자 인증 정보가 저장되었습니다.");
   };
 
   const launchTicker = async (symbolToLaunch: string) => {
@@ -358,40 +376,163 @@ export default function ControlPanel() {
         </section>
 
         {/* API Settings */}
-        <section className="bg-zinc-900/40 rounded-2xl border border-white/5 p-5 backdrop-blur-xl shadow-inner group/section">
-          <div className="flex items-center gap-2 mb-4 text-zinc-400">
-            <Shield size={16} className="group-hover/section:text-zinc-200 transition-colors" />
-            <h2 className="text-base font-bold tracking-tight">한국투자증권 KIS API Authentication</h2>
+        <div className="grid gap-4">
+          {/* KIS API 공통 헤더 + 활성화 토글 */}
+          <div className="flex items-center justify-between px-1">
+            <div className="flex items-center gap-2 text-zinc-400">
+              <Shield size={16} className={`${enableKis ? 'text-blue-400' : ''}`} />
+              <span className="text-base font-bold tracking-tight">한국투자증권 KIS API</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={`text-[10px] font-bold uppercase tracking-wider ${enableKis ? 'text-blue-400' : 'text-zinc-600'}`}>
+                {enableKis ? 'Active' : 'Disabled'}
+              </span>
+              <input
+                type="checkbox"
+                checked={enableKis}
+                onChange={(e) => {
+                  const val = e.target.checked;
+                  setEnableKis(val);
+                  Config.set({ enableKis: val });
+                }}
+                className="sr-only"
+                id="kis-toggle"
+              />
+              <label
+                htmlFor="kis-toggle"
+                className={`w-9 h-5 rounded-full p-0.5 transition-colors cursor-pointer ${enableKis ? 'bg-blue-500' : 'bg-zinc-700'}`}
+              >
+                <div className={`w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${enableKis ? 'translate-x-4' : 'translate-x-0'}`} />
+              </label>
+            </div>
           </div>
 
-          <div className="grid gap-3">
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">App Key</label>
-              <input
-                value={appKey}
-                onChange={(e) => setAppKey(e.target.value)}
-                placeholder="한국투자증권 App Key"
-                className="w-full bg-black/50 border border-white/5 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-white/20 transition-all font-mono text-xs"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">App Secret</label>
-              <input
-                type="password"
-                value={appSecret}
-                onChange={(e) => setAppSecret(e.target.value)}
-                placeholder="한국투자증권 App Secret"
-                className="w-full bg-black/50 border border-white/5 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-white/20 transition-all font-mono text-xs text-zinc-400"
-              />
-            </div>
+          {/* 활성 모드 표시 */}
+          <div className="flex items-center gap-3 px-1">
             <button
-              onClick={saveConfig}
-              className="mt-1 bg-white text-black font-black py-3 rounded-xl hover:bg-zinc-200 active:scale-[0.98] transition-all shadow-xl shadow-white/5 tracking-tighter text-xs uppercase"
-            >
-              인증 정보 저장
-            </button>
+              onClick={() => { setIsVirtual(true); Config.set({ isVirtual: true }); KisAuthStorage.clear(); }}
+              className={`text-[10px] font-black px-3 py-1 rounded-lg transition-all ${isVirtual ? 'bg-purple-500 text-white shadow-purple-500/20 shadow-lg' : 'bg-zinc-800 text-zinc-500'}`}
+            >🧪 VIRTUAL (모의)</button>
+            <button
+              onClick={() => { setIsVirtual(false); Config.set({ isVirtual: false }); KisAuthStorage.clear(); }}
+              className={`text-[10px] font-black px-3 py-1 rounded-lg transition-all ${!isVirtual ? 'bg-blue-500 text-white shadow-blue-500/20 shadow-lg' : 'bg-zinc-800 text-zinc-500'}`}
+            >💼 REAL (실계좌)</button>
+            <span className="text-[10px] text-zinc-600 font-medium ml-1">현재: {isVirtual ? '모의투자' : '실계좌'} 모드로 동작 중</span>
           </div>
-        </section>
+
+          {/* 실계좌 Key 카드 */}
+          <section className={`bg-zinc-900/40 rounded-2xl border transition-all duration-300 ${!isVirtual ? 'border-blue-500/50 shadow-blue-500/5 shadow-lg' : 'border-white/5'} p-5 backdrop-blur-xl`}>
+            <div className="flex items-center gap-2 mb-4">
+              <div className={`w-2 h-2 rounded-full ${!isVirtual ? 'bg-blue-400 animate-pulse' : 'bg-zinc-700'}`} />
+              <span className="text-sm font-black tracking-tight text-zinc-300">💼 실계좌 (Real)</span>
+              {!isVirtual && <span className="text-[9px] font-black bg-blue-500 text-white px-1.5 py-0.5 rounded ml-auto">사용 중</span>}
+            </div>
+            <div className="grid gap-3">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">App Key</label>
+                <input
+                  value={realAppKey}
+                  onChange={(e) => setRealAppKey(e.target.value)}
+                  placeholder="실계좌 App Key"
+                  disabled={!enableKis}
+                  className="w-full bg-black/50 border border-white/5 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all font-mono text-xs disabled:opacity-50"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">App Secret</label>
+                <input
+                  type="password"
+                  value={realAppSecret}
+                  onChange={(e) => setRealAppSecret(e.target.value)}
+                  placeholder="실계좌 App Secret"
+                  disabled={!enableKis}
+                  className="w-full bg-black/50 border border-white/5 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all font-mono text-xs text-zinc-400 disabled:opacity-50"
+                />
+              </div>
+              <button
+                onClick={saveRealConfig}
+                disabled={!enableKis}
+                className="mt-1 font-black py-2.5 rounded-xl active:scale-[0.98] transition-all text-xs uppercase disabled:opacity-50 bg-blue-500 text-white hover:bg-blue-400"
+              >
+                실계좌 키 저장
+              </button>
+            </div>
+          </section>
+
+          {/* 모의투자 Key 카드 */}
+          <section className={`bg-zinc-900/40 rounded-2xl border transition-all duration-300 ${isVirtual ? 'border-purple-500/50 shadow-purple-500/5 shadow-lg' : 'border-white/5'} p-5 backdrop-blur-xl`}>
+            <div className="flex items-center gap-2 mb-4">
+              <div className={`w-2 h-2 rounded-full ${isVirtual ? 'bg-purple-400 animate-pulse' : 'bg-zinc-700'}`} />
+              <span className="text-sm font-black tracking-tight text-zinc-300">🧪 모의투자 (Virtual)</span>
+              {isVirtual && <span className="text-[9px] font-black bg-purple-500 text-white px-1.5 py-0.5 rounded ml-auto">사용 중</span>}
+            </div>
+            <div className="grid gap-3">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">App Key</label>
+                <input
+                  value={virtualAppKey}
+                  onChange={(e) => setVirtualAppKey(e.target.value)}
+                  placeholder="모의투자 App Key"
+                  disabled={!enableKis}
+                  className="w-full bg-black/50 border border-white/5 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-purple-500/20 transition-all font-mono text-xs disabled:opacity-50"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">App Secret</label>
+                <input
+                  type="password"
+                  value={virtualAppSecret}
+                  onChange={(e) => setVirtualAppSecret(e.target.value)}
+                  placeholder="모의투자 App Secret"
+                  disabled={!enableKis}
+                  className="w-full bg-black/50 border border-white/5 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-purple-500/20 transition-all font-mono text-xs text-zinc-400 disabled:opacity-50"
+                />
+              </div>
+              <button
+                onClick={saveVirtualConfig}
+                disabled={!enableKis}
+                className="mt-1 font-black py-2.5 rounded-xl active:scale-[0.98] transition-all text-xs uppercase disabled:opacity-50 bg-purple-500 text-white hover:bg-purple-400"
+              >
+                모의투자 키 저장
+              </button>
+            </div>
+          </section>
+
+          {/* Yahoo Finance Fallback Section */}
+          <section className={`bg-zinc-900/40 rounded-2xl border transition-all duration-300 ${enableFallback ? 'border-yellow-500/30' : 'border-white/5 opacity-60'} p-5 backdrop-blur-xl shadow-inner`}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-zinc-400">
+                <ExternalLink size={16} className={`${enableFallback ? 'text-yellow-500' : ''}`} />
+                <div className="flex flex-col">
+                  <h2 className="text-base font-bold tracking-tight leading-none">Yahoo Finance API</h2>
+                  <p className="text-[10px] text-zinc-500 font-medium mt-1">KIS 장애 시 비상 데이터 소스 (15~20분 지연)</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`text-[10px] font-bold uppercase tracking-wider ${enableFallback ? 'text-yellow-500' : 'text-zinc-600'}`}>
+                  {enableFallback ? 'Active' : 'Disabled'}
+                </span>
+                <input
+                  type="checkbox"
+                  checked={enableFallback}
+                  onChange={(e) => {
+                    const val = e.target.checked;
+                    setEnableFallback(val);
+                    Config.set({ enableFallback: val });
+                  }}
+                  className="sr-only"
+                  id="fallback-toggle"
+                />
+                <label
+                  htmlFor="fallback-toggle"
+                  className={`w-9 h-5 rounded-full p-0.5 transition-colors cursor-pointer ${enableFallback ? 'bg-yellow-500' : 'bg-zinc-700'}`}
+                >
+                  <div className={`w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${enableFallback ? 'translate-x-4' : 'translate-x-0'}`} />
+                </label>
+              </div>
+            </div>
+          </section>
+        </div>
 
         {/* Utilities Footer */}
         <footer className="flex items-center justify-between px-4 text-zinc-600 text-[11px] font-medium tracking-tight">
@@ -406,8 +547,8 @@ export default function ControlPanel() {
             <span>Shortcut (Ctrl+Shift+L) Always Enabled</span>
           </div>
         </footer>
-      </div>
+      </div >
       <WsManager />
-    </div>
+    </div >
   );
 }

@@ -6,14 +6,17 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { X } from "lucide-react";
 import TickerCard from "../components/TickerCard";
-import { KisTickerData } from "../lib/kisApi";
+import {
+  fetchCurrentPriceUnified,
+  fetchIntradayChart
+} from "../lib/kisApi";
+import * as kisVirtualApi from "../lib/kisVirtualApi";
 import { Config } from "../lib/storage";
-
-
+import { StockData } from "../lib/types";
 
 export default function TickerWidget() {
   const { symbol } = useParams<{ symbol: string }>();
-  const [tickerData, setTickerData] = useState<KisTickerData | null>(null);
+  const [tickerData, setTickerData] = useState<StockData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLocked, setIsLocked] = useState(true);
   const [hideBorder, setHideBorder] = useState(false);
@@ -72,10 +75,57 @@ export default function TickerWidget() {
     if (!symbol) return;
     setError(null);
 
+    const loadInitialData = async () => {
+      try {
+        const { isVirtual } = Config.get();
+        const { appKey, appSecret } = Config.getActiveKeys();
+        if (!appKey || !appSecret) return;
+
+        const fetchPrice = isVirtual ? kisVirtualApi.fetchVirtualCurrentPriceUnified : fetchCurrentPriceUnified;
+        const fetchChart = isVirtual ? kisVirtualApi.fetchVirtualIntradayChart : fetchIntradayChart;
+
+        // 현재가 먼저 로드 (TPS 제한 방지위해 순차 호출)
+        const priceData = await fetchPrice(appKey, appSecret, symbol);
+        setTickerData({
+          ...priceData,
+          dataSource: 'KIS',
+          updatedAt: Date.now(),
+        });
+
+        // 잠시 후 차트 로드 (TPS 제한 방지: 600ms 간격)
+        setTimeout(async () => {
+          try {
+            const chartData = await fetchChart(appKey, appSecret, symbol);
+            if (chartData.length > 0) {
+              setTickerData(prev => prev ? { ...prev, intradayPrices: chartData } : prev);
+            }
+          } catch (chartErr) {
+            console.error("Chart load failed:", chartErr);
+          }
+        }, 800);
+      } catch (err: any) {
+        console.error("Initial load failed:", err);
+      }
+    };
+
     const setupListeners = async () => {
-      const unlistenData = await listen<KisTickerData>(`kis-ticker-data-${symbol}`, (event) => {
+      const unlistenData = await listen<StockData>(`kis-ticker-data-${symbol}`, (event) => {
         setError(null);
-        setTickerData(event.payload);
+        // 이벤트 수신 시 기존 데이터와 병합: intradayPrices만 있으면 현재가 유지
+        setTickerData(prev => {
+          const incoming = event.payload;
+          if (!prev) return incoming;
+          // currentPrice가 없거나 0인 경우 기존 값 유지
+          const hasValidPrice = incoming.currentPrice !== undefined && incoming.currentPrice !== null && incoming.currentPrice !== 0;
+          return {
+            ...prev,
+            ...incoming,
+            currentPrice: hasValidPrice ? incoming.currentPrice : prev.currentPrice,
+            changeRate: hasValidPrice ? incoming.changeRate : prev.changeRate,
+            isUp: hasValidPrice ? incoming.isUp : prev.isUp,
+            isDown: hasValidPrice ? incoming.isDown : prev.isDown,
+          };
+        });
       });
 
       const unlistenError = await listen<string>(`kis-ticker-error-${symbol}`, (event) => {
@@ -88,6 +138,7 @@ export default function TickerWidget() {
       };
     };
 
+    loadInitialData();
     const cleanupPromise = setupListeners();
 
     return () => {

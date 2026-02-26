@@ -17,14 +17,24 @@ export interface TickerPosition {
 }
 
 export interface AppConfig {
+  // [deprecated] 하위 호환용. 신규 필드 없을 때 폴백으로 사용
   appKey: string;
   appSecret: string;
+  // 실계좌 키
+  realAppKey: string;
+  realAppSecret: string;
+  // 모의투자 키
+  virtualAppKey: string;
+  virtualAppSecret: string;
   hideBorder: boolean;
   isLocked: boolean;
   symbols: string[];
   activeSymbols: string[];
   tickers: Record<string, TickerPosition>;
   scale: number;
+  enableKis: boolean;
+  enableFallback: boolean;
+  isVirtual: boolean;
 }
 
 export interface KisAuth {
@@ -37,12 +47,19 @@ export interface KisAuth {
 const DEFAULT_CONFIG: AppConfig = {
   appKey: "",
   appSecret: "",
+  realAppKey: "",
+  realAppSecret: "",
+  virtualAppKey: "",
+  virtualAppSecret: "",
   hideBorder: false,
   isLocked: true,
   symbols: [],
   activeSymbols: [],
   tickers: {},
   scale: 1.0,
+  enableKis: true,
+  enableFallback: true,
+  isVirtual: true,
 };
 
 // ─── 저수준 헬퍼 ───────────────────────────────────────────────────
@@ -109,6 +126,24 @@ export const Config = {
   /** 활성 종목 전체 교체 */
   setActiveSymbols(symbols: string[]): void {
     saveConfig({ activeSymbols: symbols });
+  },
+
+  /**
+   * 현재 모드(실/모의)에 맞는 App Key & Secret 반환.
+   * 새 필드가 비어있으면 레거시 appKey/appSecret으로 폴백.
+   */
+  getActiveKeys(): { appKey: string; appSecret: string } {
+    const c = loadConfig();
+    if (c.isVirtual) {
+      return {
+        appKey: c.virtualAppKey || c.appKey,
+        appSecret: c.virtualAppSecret || c.appSecret,
+      };
+    }
+    return {
+      appKey: c.realAppKey || c.appKey,
+      appSecret: c.realAppSecret || c.appSecret,
+    };
   },
 };
 
