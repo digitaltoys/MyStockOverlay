@@ -16,8 +16,6 @@ export default function TickerCard({ data, isLocked = true }: TickerCardProps) {
       ? "text-blue-400"
       : "text-zinc-300";
 
-  const chartColor = isUp ? "#f87171" : isDown ? "#60a5fa" : "#d4d4d8";
-
   const displayPrice = typeof currentPrice === 'number' ? currentPrice.toLocaleString() : currentPrice;
   const displayRate = typeof changeRate === 'number' ? Math.abs(changeRate).toFixed(2) : Math.abs(Number(changeRate) || 0).toFixed(2);
 
@@ -51,9 +49,9 @@ export default function TickerCard({ data, isLocked = true }: TickerCardProps) {
       <div className="flex-1 flex items-center justify-center min-w-0 mx-1">
         <Sparkline
           data={intradayPrices || []}
+          basePrice={data.basePrice}
           width={80}
           height={24}
-          color={chartColor}
         />
       </div>
 

@@ -1,5 +1,6 @@
 import { fetch } from '@tauri-apps/plugin-http';
 import { StockData } from './types';
+import { ChartCacheManager } from './chartCache';
 
 /**
  * Yahoo Finance를 통한 폴백 데이터 수신
@@ -34,14 +35,13 @@ export async function fetchFallbackData(symbol: string): Promise<StockData> {
     
     // Yahoo는 regularMarketPrice 또는 chartPreviousClose 등을 제공함
     const currentPrice = meta.regularMarketPrice ?? meta.chartPreviousClose;
-    const previousClose = meta.chartPreviousClose ?? meta.previousClose;
     
     if (currentPrice === undefined || currentPrice === null) {
       throw new Error(`Price data not found for ${symbol}`);
     }
 
     const priceNum = Number(currentPrice);
-    const prevCloseNum = Number(previousClose || currentPrice);
+    const prevCloseNum = Number(meta.chartPreviousClose) || priceNum;
     const changeRate = prevCloseNum ? ((priceNum - prevCloseNum) / prevCloseNum) * 100 : 0;
 
     // 차트 데이터 추출 (분봉)
@@ -49,16 +49,23 @@ export async function fetchFallbackData(symbol: string): Promise<StockData> {
     const intradayPrices = (indicators?.close || [])
       .filter((p: any) => p !== null && p !== undefined) as number[];
 
-    return {
+    const resultData: StockData = {
       symbol,
       currentPrice: priceNum,
       changeRate: changeRate.toFixed(2),
       isUp: priceNum > prevCloseNum,
       isDown: priceNum < prevCloseNum,
+      basePrice: prevCloseNum,
       dataSource: 'Fallback',
       updatedAt: Date.now(),
       intradayPrices: intradayPrices.length > 0 ? intradayPrices : undefined
     };
+    
+    // 기준가 캐시 업데이트
+    ChartCacheManager.updateBasePrice(symbol, prevCloseNum);
+
+    return resultData;
+    
   } catch (error) {
     console.error(`Fallback error for ${symbol}:`, error);
     throw error;

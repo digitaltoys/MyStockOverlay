@@ -1,12 +1,19 @@
+export interface ChartPoint {
+  price: number;
+  date: string;
+  hour: string;
+}
+
 export interface StockData {
   symbol: string;
   currentPrice: number | string;
   changeRate: number | string;
   isUp: boolean;
   isDown: boolean;
+  basePrice?: number; // 전일 종가
   dataSource: 'KIS' | 'Fallback';
   updatedAt: number;
-  intradayPrices?: number[]; // 당일 주가 흐름 (Sparkline용)
+  intradayPrices?: number[] | ChartPoint[]; // 당일 주가 흐름 (Sparkline용)
 }
 
 export const FETCH_INTERVALS = {

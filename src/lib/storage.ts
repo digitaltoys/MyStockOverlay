@@ -16,25 +16,30 @@ export interface TickerPosition {
   height?: number;
 }
 
+export interface ApisConfig {
+  kis: {
+    appKey: string;
+    appSecret: string;
+  };
+  kisVirtual: {
+    appKey: string;
+    appSecret: string;
+  };
+  yahoo: {
+    enabled: boolean;
+  };
+}
+
 export interface AppConfig {
-  // [deprecated] 하위 호환용. 신규 필드 없을 때 폴백으로 사용
-  appKey: string;
-  appSecret: string;
-  // 실계좌 키
-  realAppKey: string;
-  realAppSecret: string;
-  // 모의투자 키
-  virtualAppKey: string;
-  virtualAppSecret: string;
+  apis: ApisConfig;
+  isVirtual: boolean;   // KIS의 실계좌/모의투자 모드 결정
+  kisEnabled: boolean;  // KIS API 사용 여부 (REST/WS 공통)
   hideBorder: boolean;
   isLocked: boolean;
   symbols: string[];
   activeSymbols: string[];
   tickers: Record<string, TickerPosition>;
   scale: number;
-  enableKis: boolean;
-  enableFallback: boolean;
-  isVirtual: boolean;
 }
 
 export interface KisAuth {
@@ -45,21 +50,19 @@ export interface KisAuth {
 // ─── 기본값 ────────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG: AppConfig = {
-  appKey: "",
-  appSecret: "",
-  realAppKey: "",
-  realAppSecret: "",
-  virtualAppKey: "",
-  virtualAppSecret: "",
+  apis: {
+    kis: { appKey: "", appSecret: "" },
+    kisVirtual: { appKey: "", appSecret: "" },
+    yahoo: { enabled: true },
+  },
+  isVirtual: true,
+  kisEnabled: true,
   hideBorder: false,
   isLocked: true,
   symbols: [],
   activeSymbols: [],
   tickers: {},
   scale: 1.0,
-  enableKis: true,
-  enableFallback: true,
-  isVirtual: true,
 };
 
 // ─── 저수준 헬퍼 ───────────────────────────────────────────────────
@@ -73,7 +76,45 @@ export function loadConfig(): AppConfig {
   try {
     const raw = localStorage.getItem(CONFIG_KEY);
     if (!raw) return { ...DEFAULT_CONFIG };
-    return { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+    
+    const parsed = JSON.parse(raw);
+    
+    // 마이그레이션 로직: apis 키가 없으면 이전 버전들(Flat 또는 V1)임
+    if (!parsed.apis) {
+      console.log("[Storage] Migrating old config (Flat or V1) to apis subkey structure (V2)...");
+      
+      const migrated: AppConfig = {
+        ...DEFAULT_CONFIG,
+        hideBorder: parsed.hideBorder ?? DEFAULT_CONFIG.hideBorder,
+        isLocked: parsed.isLocked ?? DEFAULT_CONFIG.isLocked,
+        scale: parsed.scale ?? DEFAULT_CONFIG.scale,
+        symbols: parsed.symbols ?? DEFAULT_CONFIG.symbols,
+        activeSymbols: parsed.activeSymbols ?? DEFAULT_CONFIG.activeSymbols,
+        tickers: parsed.tickers ?? DEFAULT_CONFIG.tickers,
+        // KIS 활성화 및 가상 모드 상태 추출
+        isVirtual: parsed.kis?.isVirtual ?? parsed.isVirtual ?? DEFAULT_CONFIG.isVirtual,
+        kisEnabled: parsed.kis?.enabled ?? parsed.enableKis ?? DEFAULT_CONFIG.kisEnabled,
+        apis: {
+          kis: {
+            appKey: parsed.kis?.realAppKey ?? parsed.realAppKey ?? parsed.appKey ?? "",
+            appSecret: parsed.kis?.realAppSecret ?? parsed.realAppSecret ?? parsed.appSecret ?? "",
+          },
+          kisVirtual: {
+            appKey: parsed.kis?.virtualAppKey ?? parsed.virtualAppKey ?? "",
+            appSecret: parsed.kis?.virtualAppSecret ?? parsed.virtualAppSecret ?? "",
+          },
+          yahoo: {
+            enabled: parsed.fallback?.enabled ?? parsed.enableFallback ?? DEFAULT_CONFIG.apis.yahoo.enabled,
+          }
+        }
+      };
+      
+      // 마이그레이션 결과 즉시 저장
+      localStorage.setItem(CONFIG_KEY, JSON.stringify(migrated));
+      return migrated;
+    }
+
+    return { ...DEFAULT_CONFIG, ...parsed };
   } catch {
     return { ...DEFAULT_CONFIG };
   }
@@ -81,7 +122,18 @@ export function loadConfig(): AppConfig {
 
 export function saveConfig(partial: Partial<AppConfig>): AppConfig {
   const current = loadConfig();
-  const next = { ...current, ...partial };
+  
+  // apis 객체는 내부 필드가 유실되지 않도록 특별히 병합 처리
+  const nextApis = partial.apis 
+    ? { ...current.apis, ...partial.apis } 
+    : current.apis;
+
+  const next = { 
+    ...current, 
+    ...partial, 
+    apis: nextApis 
+  };
+  
   localStorage.setItem(CONFIG_KEY, JSON.stringify(next));
   return next;
 }
@@ -136,13 +188,13 @@ export const Config = {
     const c = loadConfig();
     if (c.isVirtual) {
       return {
-        appKey: c.virtualAppKey || c.appKey,
-        appSecret: c.virtualAppSecret || c.appSecret,
+        appKey: c.apis.kisVirtual.appKey,
+        appSecret: c.apis.kisVirtual.appSecret,
       };
     }
     return {
-      appKey: c.realAppKey || c.appKey,
-      appSecret: c.realAppSecret || c.appSecret,
+      appKey: c.apis.kis.appKey,
+      appSecret: c.apis.kis.appSecret,
     };
   },
 };
@@ -150,9 +202,10 @@ export const Config = {
 // ─── KIS 인증 토큰 ─────────────────────────────────────────────────
 
 export const KisAuthStorage = {
-  get(): KisAuth | null {
+  get(isVirtual: boolean = false): KisAuth | null {
+    const key = isVirtual ? "kis_auth_virtual" : AUTH_KEY;
     try {
-      const raw = localStorage.getItem(AUTH_KEY);
+      const raw = localStorage.getItem(key);
       if (!raw) return null;
       return JSON.parse(raw) as KisAuth;
     } catch {
@@ -160,11 +213,18 @@ export const KisAuthStorage = {
     }
   },
 
-  set(auth: KisAuth): void {
-    localStorage.setItem(AUTH_KEY, JSON.stringify(auth));
+  set(auth: KisAuth, isVirtual: boolean = false): void {
+    const key = isVirtual ? "kis_auth_virtual" : AUTH_KEY;
+    localStorage.setItem(key, JSON.stringify(auth));
   },
 
-  clear(): void {
-    localStorage.removeItem(AUTH_KEY);
+  clear(isVirtual?: boolean): void {
+    if (isVirtual === undefined) {
+      localStorage.removeItem(AUTH_KEY);
+      localStorage.removeItem("kis_auth_virtual");
+    } else {
+      const key = isVirtual ? "kis_auth_virtual" : AUTH_KEY;
+      localStorage.removeItem(key);
+    }
   },
 };

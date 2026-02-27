@@ -77,32 +77,41 @@ export default function TickerWidget() {
 
     const loadInitialData = async () => {
       try {
-        const { isVirtual } = Config.get();
+        const config = Config.get();
         const { appKey, appSecret } = Config.getActiveKeys();
         if (!appKey || !appSecret) return;
 
-        const fetchPrice = isVirtual ? kisVirtualApi.fetchVirtualCurrentPriceUnified : fetchCurrentPriceUnified;
-        const fetchChart = isVirtual ? kisVirtualApi.fetchVirtualIntradayChart : fetchIntradayChart;
+        const fetchPrice = config.isVirtual ? kisVirtualApi.fetchVirtualCurrentPriceUnified : fetchCurrentPriceUnified;
+        const fetchChart = config.isVirtual ? kisVirtualApi.fetchVirtualIntradayChart : fetchIntradayChart;
 
-        // 현재가 먼저 로드 (TPS 제한 방지위해 순차 호출)
-        const priceData = await fetchPrice(appKey, appSecret, symbol);
-        setTickerData({
-          ...priceData,
-          dataSource: 'KIS',
-          updatedAt: Date.now(),
-        });
+        if (config.kisEnabled) {
+          // KIS 활성화 시 KIS에서 로드
+          const priceData = await fetchPrice(appKey, appSecret, symbol);
+          setTickerData(prev => ({
+            ...(prev || {}),
+            ...priceData,
+            dataSource: 'KIS',
+            updatedAt: Date.now(),
+          } as StockData));
 
-        // 잠시 후 차트 로드 (TPS 제한 방지: 600ms 간격)
-        setTimeout(async () => {
-          try {
-            const chartData = await fetchChart(appKey, appSecret, symbol);
-            if (chartData.length > 0) {
-              setTickerData(prev => prev ? { ...prev, intradayPrices: chartData } : prev);
+          // 잠시 후 차트 로드 (TPS 제한 방지)
+          setTimeout(async () => {
+            try {
+              const chartData = await fetchChart(appKey, appSecret, symbol);
+              if (chartData.length > 0) {
+                setTickerData(prev => prev ? { ...prev, intradayPrices: chartData } : prev);
+              }
+            } catch (chartErr) {
+              console.error("Chart load failed:", chartErr);
             }
-          } catch (chartErr) {
-            console.error("Chart load failed:", chartErr);
-          }
-        }, 800);
+          }, 800);
+        } else if (config.apis.yahoo.enabled) {
+          // KIS는 꺼져있고 Yahoo만 켜져있는 경우
+          const { fetchFallbackData } = await import("../lib/fallbackApi");
+          const fbData = await fetchFallbackData(symbol);
+          setTickerData(fbData);
+        }
+
       } catch (err: any) {
         console.error("Initial load failed:", err);
       }

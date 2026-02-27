@@ -49,5 +49,5 @@ class KisRateLimiter {
   }
 }
 
-// 전역 싱글턴 인스턴스 (모의투자 기본값: 600ms)
-export const kisRateLimiter = new KisRateLimiter(600);
+// 전역 싱글턴 인스턴스 (모의투자 기본값: 1000ms)
+export const kisRateLimiter = new KisRateLimiter(1000);

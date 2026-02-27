@@ -47,16 +47,16 @@ export default function ControlPanel() {
     // Load saved settings
     const config = Config.get();
     // 실/모의 키 로드
-    setRealAppKey(config.realAppKey || config.appKey || "");
-    setRealAppSecret(config.realAppSecret || config.appSecret || "");
-    setVirtualAppKey(config.virtualAppKey || config.appKey || "");
-    setVirtualAppSecret(config.virtualAppSecret || config.appSecret || "");
+    setRealAppKey(config.apis.kis.appKey);
+    setRealAppSecret(config.apis.kis.appSecret);
+    setVirtualAppKey(config.apis.kisVirtual.appKey);
+    setVirtualAppSecret(config.apis.kisVirtual.appSecret);
     if (config.symbols.length) setTickerSymbols(config.symbols);
     setHideBorder(config.hideBorder);
     setScale(config.scale || 1.0);
-    setEnableKis(config.enableKis !== false);
-    setEnableFallback(config.enableFallback !== false);
-    setIsVirtual(!!config.isVirtual);
+    setEnableKis(config.kisEnabled);
+    setEnableFallback(config.apis.yahoo.enabled);
+    setIsVirtual(config.isVirtual);
 
     const initialLockState = config.isLocked;
     setIsLocked(initialLockState);
@@ -95,14 +95,32 @@ export default function ControlPanel() {
   }, []);
 
   const saveRealConfig = () => {
-    Config.set({ realAppKey, realAppSecret });
-    KisAuthStorage.clear();
+    const config = Config.get();
+    Config.set({
+      apis: {
+        ...config.apis,
+        kis: {
+          appKey: realAppKey,
+          appSecret: realAppSecret
+        }
+      }
+    });
+    KisAuthStorage.clear(false); // 실계좌 토큰만 삭제
     alert("실계좌 인증 정보가 저장되었습니다.");
   };
 
   const saveVirtualConfig = () => {
-    Config.set({ virtualAppKey, virtualAppSecret });
-    KisAuthStorage.clear();
+    const config = Config.get();
+    Config.set({
+      apis: {
+        ...config.apis,
+        kisVirtual: {
+          appKey: virtualAppKey,
+          appSecret: virtualAppSecret
+        }
+      }
+    });
+    KisAuthStorage.clear(true); // 모의투자 토큰만 삭제
     alert("모의투자 인증 정보가 저장되었습니다.");
   };
 
@@ -393,7 +411,7 @@ export default function ControlPanel() {
                 onChange={(e) => {
                   const val = e.target.checked;
                   setEnableKis(val);
-                  Config.set({ enableKis: val });
+                  Config.set({ kisEnabled: val });
                 }}
                 className="sr-only"
                 id="kis-toggle"
@@ -410,11 +428,19 @@ export default function ControlPanel() {
           {/* 활성 모드 표시 */}
           <div className="flex items-center gap-3 px-1">
             <button
-              onClick={() => { setIsVirtual(true); Config.set({ isVirtual: true }); KisAuthStorage.clear(); }}
+              onClick={() => {
+                setIsVirtual(true);
+                Config.set({ isVirtual: true });
+                KisAuthStorage.clear(true);
+              }}
               className={`text-[10px] font-black px-3 py-1 rounded-lg transition-all ${isVirtual ? 'bg-purple-500 text-white shadow-purple-500/20 shadow-lg' : 'bg-zinc-800 text-zinc-500'}`}
             >🧪 VIRTUAL (모의)</button>
             <button
-              onClick={() => { setIsVirtual(false); Config.set({ isVirtual: false }); KisAuthStorage.clear(); }}
+              onClick={() => {
+                setIsVirtual(false);
+                Config.set({ isVirtual: false });
+                KisAuthStorage.clear(false);
+              }}
               className={`text-[10px] font-black px-3 py-1 rounded-lg transition-all ${!isVirtual ? 'bg-blue-500 text-white shadow-blue-500/20 shadow-lg' : 'bg-zinc-800 text-zinc-500'}`}
             >💼 REAL (실계좌)</button>
             <span className="text-[10px] text-zinc-600 font-medium ml-1">현재: {isVirtual ? '모의투자' : '실계좌'} 모드로 동작 중</span>
@@ -518,7 +544,16 @@ export default function ControlPanel() {
                   onChange={(e) => {
                     const val = e.target.checked;
                     setEnableFallback(val);
-                    Config.set({ enableFallback: val });
+                    const config = Config.get();
+                    Config.set({
+                      apis: {
+                        ...config.apis,
+                        yahoo: {
+                          ...config.apis.yahoo,
+                          enabled: val
+                        }
+                      }
+                    });
                   }}
                   className="sr-only"
                   id="fallback-toggle"

@@ -22,8 +22,9 @@ export default function WsManager() {
   const subscribedRefs = useRef<Set<string>>(new Set());
   const isConnectingRef = useRef(false);
   const fallbackTimersRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
+  const chartTimersRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
   const lastUpdateTimesRef = useRef<Map<string, number>>(new Map());
-  const chartDataRefs = useRef<Map<string, number[]>>(new Map());
+  const chartDataRefs = useRef<Map<string, any[]>>(new Map());
 
   useEffect(() => {
     let checkInterval: ReturnType<typeof setInterval>;
@@ -33,9 +34,9 @@ export default function WsManager() {
       isConnectingRef.current = true;
 
       try {
-        const { enableKis } = Config.get();
-        const { appKey, appSecret } = Config.getActiveKeys(); // 실/모의 모드별 활성 key
-        if (!enableKis) {
+        const config = Config.get();
+        const { appKey, appSecret } = Config.getActiveKeys();
+        if (!config.kisEnabled) {
           isConnectingRef.current = false;
           return;
         }
@@ -45,14 +46,12 @@ export default function WsManager() {
         }
 
         if (!approvalKeyRef.current) {
-          const { isVirtual } = Config.get();
-          approvalKeyRef.current = isVirtual
+          approvalKeyRef.current = config.isVirtual
             ? await kisVirtualApi.getKisVirtualWsApprovalKey(appKey, appSecret)
             : await getKisWsApprovalKey(appKey, appSecret);
         }
 
-        const { isVirtual } = Config.get();
-        const wsUrl = isVirtual ? KIS_WS_URL_VIRTUAL : KIS_WS_URL_REAL;
+        const wsUrl = config.isVirtual ? KIS_WS_URL_VIRTUAL : KIS_WS_URL_REAL;
         const socket = new WebSocket(wsUrl);
 
         socket.onopen = () => {
@@ -88,11 +87,36 @@ export default function WsManager() {
                     updatedAt: Date.now()
                   };
 
-                  // 실시간 차트 데이터 업데이트
+                  // 실시간 차트 데이터 업데이트 (시간, 날짜 포함 객체로 구성)
                   const sessionChart = chartDataRefs.current.get(parsedSymbol) || [];
-                  const newChart = [...sessionChart, unifiedData.currentPrice as number];
+                  const now = new Date();
+                  const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+                  const hourStr = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+                  const newPoint = { price: Number(unifiedData.currentPrice), date: dateStr, hour: hourStr };
+
+                  let newChart = [...sessionChart];
+                  if (newChart.length > 0) {
+                    const lastPoint = newChart[newChart.length - 1];
+                    // 배열의 요소 타입 호환(초기 숫자형 vs 객체형) 검사
+                    if (typeof lastPoint === 'object' && lastPoint.date && lastPoint.hour) {
+                      const lastGroup = lastPoint.date + lastPoint.hour.substring(0, 3);
+                      const currentGroup = newPoint.date + newPoint.hour.substring(0, 3);
+                      if (lastGroup === currentGroup) {
+                        // 같은 10분 구간이면 마지막 종가를 갱신
+                        newChart[newChart.length - 1] = newPoint;
+                      } else {
+                        // 구간이 바뀌면 새로 추가
+                        newChart.push(newPoint);
+                      }
+                    } else {
+                      newChart.push(newPoint);
+                    }
+                  } else {
+                    newChart.push(newPoint);
+                  }
+
                   // 최대 400개 정도 유지 (당일 분봉 약 380개)
-                  if (newChart.length > 400) newChart.shift();
+                  if (newChart.length > 400) newChart = newChart.slice(-400);
                   chartDataRefs.current.set(parsedSymbol, newChart);
                   unifiedData.intradayPrices = newChart;
 
@@ -137,25 +161,80 @@ export default function WsManager() {
     };
 
     const syncSubscriptions = () => {
-      const { activeSymbols, enableKis, enableFallback, isVirtual } = Config.get();
-      const { appKey, appSecret } = Config.getActiveKeys(); // 실/모의 모드에 따른 활성 key
-      const activeSet = new Set(activeSymbols);
+      const config = Config.get();
+      const { appKey, appSecret } = Config.getActiveKeys();
+      const activeSet = new Set(config.activeSymbols);
+
+      // --- [설정 변경 감지 및 동기화] ---
+      // 모드(isVirtual)나 API 키가 바뀌면 기존 타이머들을 모두 날려야 함 (클로저 stale 방지)
+      const currentConfigSignature = `${config.isVirtual}-${appKey}-${appSecret}-${config.kisEnabled}`;
+      const lastSignature = (syncSubscriptions as any).lastSignature;
+
+      if (lastSignature && lastSignature !== currentConfigSignature) {
+        console.log("[WsManager] Config changed (Mode/Keys/Enable), resetting all timers & approval key.");
+        approvalKeyRef.current = null; // 승인키도 재발급 유도
+
+        // 모든 타이머 강제 종료
+        fallbackTimersRef.current.forEach(timer => clearInterval(timer));
+        fallbackTimersRef.current.clear();
+        chartTimersRef.current.forEach(timer => clearInterval(timer));
+        chartTimersRef.current.clear();
+
+        // 웹소켓도 재연결이 필요할 수 있으므로 닫기 (이후 루프에서 자동 재연결)
+        if (wsRef.current) wsRef.current.close();
+      }
+      (syncSubscriptions as any).lastSignature = currentConfigSignature;
+      // ------------------------------------
 
       // KIS WS 또는 REST 실패 시 폴백 작동을 위한 타이머 관리
       activeSet.forEach(symbol => {
         const lastUpdate = lastUpdateTimesRef.current.get(symbol) || 0;
         const timeSinceLastUpdate = Date.now() - lastUpdate;
 
-        // KIS 데이터가 10초 이상 없거나 KIS가 꺼져 있으면 폴백 모드 검토
-        const shouldTryFallback = enableFallback && (timeSinceLastUpdate > 10 * 1000 || !enableKis);
+        // --- [차트 30초 갱신 (오버라이트) 타이머 설정] ---
+        if (config.kisEnabled && appKey && appSecret) {
+          if (!chartTimersRef.current.has(symbol)) {
+            const fetchFunc = config.isVirtual ? kisVirtualApi.fetchVirtualCurrentPriceUnified : fetchCurrentPriceUnified;
+            const fetchChartFunc = config.isVirtual ? kisVirtualApi.fetchVirtualIntradayChart : fetchIntradayChart;
+            const cTimer = setInterval(async () => {
+              try {
+                const priceData = await fetchFunc(appKey, appSecret, symbol);
+                const chartData = await fetchChartFunc(appKey, appSecret, symbol);
+
+                chartDataRefs.current.set(symbol, chartData);
+                lastUpdateTimesRef.current.set(symbol, Date.now());
+                const unifiedData: StockData = {
+                  ...priceData,
+                  dataSource: 'KIS',
+                  updatedAt: Date.now(),
+                  intradayPrices: chartData
+                };
+                invoke("broadcast_ticker_data", { symbol, data: unifiedData }).catch(console.error);
+              } catch (e) {
+                console.error(`Chart 30s Polling Error for ${symbol}`, e);
+              }
+            }, 30000); // 30초 간격 반복
+            chartTimersRef.current.set(symbol, cTimer);
+          }
+        } else {
+          // KIS 비활성화 시 차트 폴링 해제
+          if (chartTimersRef.current.has(symbol)) {
+            clearInterval(chartTimersRef.current.get(symbol)!);
+            chartTimersRef.current.delete(symbol);
+          }
+        }
+        // ---------------------------------------------------
+
+        // KIS 데이터가 30초 이상 없거나 KIS가 꺼져 있으면 폴백 모드 검토
+        const shouldTryFallback = config.apis.yahoo.enabled && (timeSinceLastUpdate > 30 * 1000 || !config.kisEnabled);
 
         if (shouldTryFallback) {
           if (!fallbackTimersRef.current.has(symbol)) {
             console.log(`Starting Fallback for ${symbol} (Criteria met)`);
 
             // KIS REST 폴링 타이머 (10초마다 갱신 - Yahoo보다 빠름)
-            if (enableKis && appKey && appSecret) {
-              const fetchFunc = isVirtual ? kisVirtualApi.fetchVirtualCurrentPriceUnified : fetchCurrentPriceUnified;
+            if (config.kisEnabled && appKey && appSecret) {
+              const fetchFunc = config.isVirtual ? kisVirtualApi.fetchVirtualCurrentPriceUnified : fetchCurrentPriceUnified;
               // 즉시 1회 실행
               fetchFunc(appKey, appSecret, symbol)
                 .then(data => {
@@ -199,7 +278,7 @@ export default function WsManager() {
               const timer = setInterval(() => {
                 fetchFallbackData(symbol)
                   .then(data => {
-                    if (enableKis) {
+                    if (config.kisEnabled) {
                       const currentLast = lastUpdateTimesRef.current.get(symbol) || 0;
                       if (Date.now() - currentLast < 30 * 1000) return;
                     }
@@ -220,16 +299,23 @@ export default function WsManager() {
         }
       });
 
-      // 제거된 종목의 폴백 타이머 정리
-      Array.from(fallbackTimersRef.current.entries()).forEach(([symbol, timer]: [string, any]) => {
-        if (!activeSet.has(symbol)) {
+      // 제거된 종목의 폴백/차트 타이머 정리
+      Array.from(fallbackTimersRef.current.entries()).forEach(([sym, timer]: [string, any]) => {
+        if (!activeSet.has(sym)) {
           clearInterval(timer);
-          fallbackTimersRef.current.delete(symbol);
+          fallbackTimersRef.current.delete(sym);
+        }
+      });
+      Array.from(chartTimersRef.current.entries()).forEach(([sym, timer]: [string, any]) => {
+        if (!activeSet.has(sym)) {
+          clearInterval(timer);
+          chartTimersRef.current.delete(sym);
         }
       });
 
-      if (enableKis && wsRef.current && wsRef.current.readyState === WebSocket.OPEN && approvalKeyRef.current) {
-        let requestDelay = 0;
+      if (config.kisEnabled && wsRef.current && wsRef.current.readyState === WebSocket.OPEN && approvalKeyRef.current) {
+        const symbolsToInit: string[] = [];
+
         for (const symbol of activeSet) {
           if (!subscribedRefs.current.has(symbol)) {
             const isIndex = isIndexSymbol(symbol);
@@ -240,84 +326,87 @@ export default function WsManager() {
               wsRef.current.send(getKisWsSubscriptionMessage(approvalKeyRef.current, symbol, true, "H0NXCNT0"));
             }
             subscribedRefs.current.add(symbol);
-
-            // REST로 현재가 및 차트 초기값 로드
-            const { appKey, appSecret, isVirtual } = Config.get();
-            if (appKey && appSecret) {
-              const fetchFunc = isVirtual ? kisVirtualApi.fetchVirtualCurrentPriceUnified : fetchCurrentPriceUnified;
-              const fetchChartFunc = isVirtual ? kisVirtualApi.fetchVirtualIntradayChart : fetchIntradayChart;
-
-              // 현재가 조회 지연 예약
-              const priceDelay = requestDelay;
-              requestDelay += 1000;
-              setTimeout(async () => {
-                try {
-                  const data = await fetchFunc(appKey, appSecret, symbol);
-                  lastUpdateTimesRef.current.set(symbol, Date.now());
-                  invoke("broadcast_ticker_data", {
-                    symbol,
-                    data: { ...data, dataSource: 'KIS', updatedAt: Date.now(), intradayPrices: chartDataRefs.current.get(symbol) }
-                  }).catch(console.error);
-                } catch (e) {
-                  console.error(`[WsManager] Price fetch error for ${symbol}`, e);
-                }
-              }, priceDelay);
-
-              // 차트 조회 지연 예약 (현재가 호출과 1000ms 간격)
-              const chartDelay = requestDelay;
-              requestDelay += 1000;
-              setTimeout(async () => {
-                try {
-                  const chartData = await fetchChartFunc(appKey, appSecret, symbol);
-                  console.log(`[WsManager] Initial Chart Load for ${symbol}: KIS points = ${chartData.length}`);
-
-                  let finalChart = chartData;
-
-                  // KIS 차트 데이터가 없으면 폴백 시도
-                  if (finalChart.length === 0) {
-                    console.log(`[WsManager] KIS Chart empty for ${symbol}, trying Yahoo Fallback...`);
-                    try {
-                      const fbData = await fetchFallbackData(symbol);
-                      if (fbData.intradayPrices && fbData.intradayPrices.length > 0) {
-                        finalChart = fbData.intradayPrices;
-                        console.log(`[WsManager] Fallback Chart SUCCESS for ${symbol}: points = ${finalChart.length}`);
-                      }
-                    } catch (e) {
-                      console.error(`[WsManager] Fallback Failed for ${symbol}`, e);
-                    }
-                  }
-
-                  if (finalChart.length > 0) {
-                    chartDataRefs.current.set(symbol, finalChart);
-                    console.log(`[WsManager] Chart saved for ${symbol}: ${finalChart.length} points. Next price poll will include it.`);
-                    // 브로드캐스트하지 않음: changeRate 없이 전송하면 가격 정보가 0으로 덮어씌워짐
-                    // 다음 REST 폴링(10초마다)에서 intradayPrices를 포함하여 전송됨
-                  }
-                } catch (e) {
-                  console.error(`[WsManager] Chart fetch error for ${symbol}`, e);
-                }
-              }, chartDelay);
-            }
+            lastUpdateTimesRef.current.set(symbol, Date.now()); // 추가 즉시 폴백 방지를 위해 현재 시간으로 초기화
+            symbolsToInit.push(symbol);
           }
         }
+
+        // REST로 현재가 및 차트 초기값 순차 로드 (TPS 제한 방어)
+        if (symbolsToInit.length > 0) {
+          (async () => {
+            const currentConfig = Config.get();
+            const { appKey, appSecret } = Config.getActiveKeys();
+            const isV = currentConfig.isVirtual;
+            if (!appKey || !appSecret) return;
+
+            const fetchFunc = isV ? kisVirtualApi.fetchVirtualCurrentPriceUnified : fetchCurrentPriceUnified;
+            const fetchChartFunc = isV ? kisVirtualApi.fetchVirtualIntradayChart : fetchIntradayChart;
+
+            for (const symbol of symbolsToInit) {
+              try {
+                // 1. 현재가 조회 (동기)
+                const data = await fetchFunc(appKey, appSecret, symbol);
+                lastUpdateTimesRef.current.set(symbol, Date.now());
+                invoke("broadcast_ticker_data", {
+                  symbol,
+                  data: { ...data, dataSource: 'KIS', updatedAt: Date.now(), intradayPrices: chartDataRefs.current.get(symbol) }
+                }).catch(console.error);
+
+                // TPS 방어 대기
+                await new Promise(r => setTimeout(r, 600));
+
+                // 2. 차트 조회 (동기)
+                const chartData = await fetchChartFunc(appKey, appSecret, symbol);
+                console.log(`[WsManager] Initial Chart Load for ${symbol}: KIS points = ${chartData.length}`);
+
+                let finalChart = chartData;
+
+                if (finalChart.length === 0 && config.apis.yahoo.enabled && !config.kisEnabled) {
+                  // KIS가 꺼져있을 때만 Yahoo에서 차트 보완 시도 (중복 방지)
+                  try {
+                    const fbData = await fetchFallbackData(symbol);
+                    if (fbData.intradayPrices && fbData.intradayPrices.length > 0) {
+                      finalChart = fbData.intradayPrices as any;
+                    }
+                  } catch (e) {
+                    console.error(`[WsManager] Fallback Failed for ${symbol}`, e);
+                  }
+                }
+
+                if (finalChart.length > 0) {
+                  chartDataRefs.current.set(symbol, finalChart);
+                }
+
+                // TPS 방어 대기 (다음 심볼 진행 전)
+                await new Promise(r => setTimeout(r, 600));
+
+              } catch (e) {
+                console.error(`[WsManager] Init fetch error for ${symbol}`, e);
+              }
+            }
+          })();
+        }
+
         // 제거된 종목 구독 해제 (KRX + NXT 모두)
-        for (const symbol of subscribedRefs.current) {
+        for (const symbol of Array.from(subscribedRefs.current)) {
           if (!activeSet.has(symbol)) {
             const isIndex = isIndexSymbol(symbol);
-            if (isIndex) {
-              wsRef.current.send(getKisWsSubscriptionMessage(approvalKeyRef.current, symbol, false, "H0STCNI0"));
-            } else {
-              wsRef.current.send(getKisWsSubscriptionMessage(approvalKeyRef.current, symbol, false, "H0STCNT0"));
-              wsRef.current.send(getKisWsSubscriptionMessage(approvalKeyRef.current, symbol, false, "H0NXCNT0"));
+            if (wsRef.current && approvalKeyRef.current) {
+              if (isIndex) {
+                wsRef.current.send(getKisWsSubscriptionMessage(approvalKeyRef.current, symbol, false, "H0STCNI0"));
+              } else {
+                wsRef.current.send(getKisWsSubscriptionMessage(approvalKeyRef.current, symbol, false, "H0STCNT0"));
+                wsRef.current.send(getKisWsSubscriptionMessage(approvalKeyRef.current, symbol, false, "H0NXCNT0"));
+              }
             }
             subscribedRefs.current.delete(symbol);
             lastUpdateTimesRef.current.delete(symbol);
           }
         }
       } else {
-        if (enableKis && activeSet.size > 0 && !isConnectingRef.current && !wsRef.current) {
+        if (config.kisEnabled && activeSet.size > 0 && !isConnectingRef.current && !wsRef.current) {
           connectWs();
-        } else if ((!enableKis || activeSet.size === 0) && wsRef.current) {
+        } else if ((!config.kisEnabled || activeSet.size === 0) && wsRef.current) {
           wsRef.current.close();
         }
       }
@@ -327,7 +416,6 @@ export default function WsManager() {
 
     return () => {
       clearInterval(checkInterval);
-      fallbackTimersRef.current.forEach(clearInterval);
       if (wsRef.current) wsRef.current.close();
     };
   }, []);
