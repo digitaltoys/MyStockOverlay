@@ -16,6 +16,16 @@ export interface TickerPosition {
   height?: number;
 }
 
+export interface StockPurchase {
+  price: number;   // 매입가 (원)
+  qty: number;     // 수량
+}
+
+export interface MyStock {
+  symbol: string;
+  purchases: StockPurchase[];  // 매입 이력
+}
+
 export interface ApisConfig {
   kis: {
     appKey: string;
@@ -40,6 +50,7 @@ export interface AppConfig {
   activeSymbols: string[];
   tickers: Record<string, TickerPosition>;
   scale: number;
+  myStocks: MyStock[];  // 내 주식 매입 이력
 }
 
 export interface KisAuth {
@@ -63,6 +74,7 @@ const DEFAULT_CONFIG: AppConfig = {
   activeSymbols: [],
   tickers: {},
   scale: 1.0,
+  myStocks: [],
 };
 
 // ─── 저수준 헬퍼 ───────────────────────────────────────────────────
@@ -114,6 +126,10 @@ export function loadConfig(): AppConfig {
       return migrated;
     }
 
+    // myStocks 필드 마이그레이션 (이전 버전에 없을 수 있음)
+    if (!parsed.myStocks) {
+      parsed.myStocks = [];
+    }
     return { ...DEFAULT_CONFIG, ...parsed };
   } catch {
     return { ...DEFAULT_CONFIG };

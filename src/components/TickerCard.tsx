@@ -22,7 +22,7 @@ export default function TickerCard({ data, isLocked = true }: TickerCardProps) {
   return (
     <div className={`flex items-center gap-2 w-full h-full font-sans transition-opacity duration-500 ${!isLocked ? 'opacity-90 relative' : 'opacity-100'} px-1`}>
       {/* Left side: Symbol Display */}
-      <div className="flex items-center gap-1.5 flex-shrink-0" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
+      <div className="flex items-center gap-1.5 flex-shrink-0">
         <div className="flex flex-col min-w-0">
           <span className="text-[10px] font-bold text-white/40 leading-none uppercase tracking-tighter truncate">
             {symbol}
@@ -56,7 +56,7 @@ export default function TickerCard({ data, isLocked = true }: TickerCardProps) {
       </div>
 
       {/* Right side: Price and Rate */}
-      <div className="flex flex-col items-end min-w-0 pr-1 cursor-pointer hover:bg-white/5 rounded transition-colors" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
+      <div className="flex flex-col items-end min-w-0 pr-1 cursor-pointer hover:bg-white/5 rounded transition-colors">
         <div className={`text-[19px] font-mono font-bold leading-none ${colorClass} tabular-nums drop-shadow-[0_2px_3px_rgba(0,0,0,1)] truncate`}>
           {displayPrice}
         </div>

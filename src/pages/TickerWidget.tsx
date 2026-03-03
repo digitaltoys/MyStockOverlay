@@ -1,5 +1,5 @@
 import { useParams } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -21,6 +21,32 @@ export default function TickerWidget() {
   const [isLocked, setIsLocked] = useState(true);
   const [hideBorder, setHideBorder] = useState(false);
   const [scale, setScale] = useState(1.0);
+  const isLockedRef = useRef(true);
+  const dragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // macOS 투명 창에서 startDragging() 직접 호출
+  // 더블클릭과 충돌 방지: 150ms 이상 누르고 있을 때만 드래그 시작
+  const handleDragStart = (e: React.MouseEvent) => {
+    // 버튼 클릭 등 interactive 요소는 제외
+    if ((e.target as HTMLElement).closest('button')) return;
+    // 언락 모드일 때만 드래그
+    if (isLockedRef.current) return;
+
+    dragTimerRef.current = setTimeout(async () => {
+      try {
+        await getCurrentWindow().startDragging();
+      } catch (err) {
+        console.error('startDragging failed:', err);
+      }
+    }, 150);
+  };
+
+  const handleDragCancel = () => {
+    if (dragTimerRef.current) {
+      clearTimeout(dragTimerRef.current);
+      dragTimerRef.current = null;
+    }
+  };
 
   useEffect(() => {
     const setupEvents = async () => {
@@ -29,6 +55,7 @@ export default function TickerWidget() {
 
       const unlistenLock = await listen<boolean>("lock-toggled", (event) => {
         setIsLocked(event.payload);
+        isLockedRef.current = event.payload;
       });
       const unlistenBorder = await listen<boolean>("border-toggled", (event) => {
         setHideBorder(event.payload);
@@ -181,7 +208,9 @@ export default function TickerWidget() {
     return (
       <div
         className={`flex items-center justify-center w-full h-full relative group p-2 transition-all duration-300 ${!hideBorder ? 'ring-2 ring-white/10 bg-zinc-900/90 rounded-xl border border-white/5 shadow-2xl' : ''}`}
-        style={{ WebkitAppRegion: "drag", backgroundColor: "transparent" } as React.CSSProperties}
+        onMouseDownCapture={handleDragStart}
+        onMouseUpCapture={handleDragCancel}
+        style={{ backgroundColor: "transparent", cursor: isLocked ? "default" : "move" } as React.CSSProperties}
       >
         {!isLocked && (
           <button
@@ -211,7 +240,9 @@ export default function TickerWidget() {
     return (
       <div
         className={`flex flex-col items-center justify-center w-full h-full gap-1 relative overflow-hidden p-2 transition-all duration-300 ${!hideBorder ? 'ring-2 ring-white/10 bg-zinc-900/90 rounded-xl border border-white/5 shadow-2xl' : ''}`}
-        style={{ WebkitAppRegion: "drag", backgroundColor: "transparent" } as React.CSSProperties}
+        onMouseDownCapture={handleDragStart}
+        onMouseUpCapture={handleDragCancel}
+        style={{ backgroundColor: "transparent", cursor: isLocked ? "default" : "move" } as React.CSSProperties}
       >
         {!isLocked && (
           <button
@@ -236,8 +267,10 @@ export default function TickerWidget() {
   return (
     <div
       onDoubleClick={handleDoubleClick}
+      onMouseDownCapture={handleDragStart}
+      onMouseUpCapture={handleDragCancel}
       className={`w-full h-full flex items-center p-2 select-none relative transition-all duration-300 ${!hideBorder ? 'ring-2 ring-white/10 bg-zinc-900/90 rounded-xl border border-white/5 shadow-2xl' : ''}`}
-      style={{ WebkitAppRegion: "drag", backgroundColor: "transparent" } as React.CSSProperties}
+      style={{ backgroundColor: "transparent", cursor: isLocked ? "default" : "move" } as React.CSSProperties}
     >
       {!isLocked && (
         <button
