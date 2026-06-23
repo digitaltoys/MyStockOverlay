@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   Plus, Trash2, ExternalLink, Shield, Lock, Unlock, Keyboard,
   Settings, Monitor, ChevronDown, ChevronUp, TrendingUp, List,
-  Pencil, Check, X
+  Pencil, Check, X, RefreshCw
 } from "lucide-react";
 import WsManager from "../components/WsManager";
 import { Config, KisAuthStorage, MyStock, StockPurchase } from "../lib/storage";
@@ -347,6 +347,23 @@ export default function ControlPanel() {
     Config.set({ apis: { ...config.apis, kisVirtual: { appKey: virtualAppKey, appSecret: virtualAppSecret } } });
     KisAuthStorage.clear(true);
     alert("모의투자 인증 정보가 저장되었습니다.");
+  };
+
+  const clearAuthTokens = () => {
+    if (confirm("웹소켓 및 API 연결 인증 정보를 초기화하시겠습니까?\n강제로 새로운 세션과 접속 키를 발급받습니다.")) {
+      KisAuthStorage.clear(); // 전체 환경(모의, 실전) 캐시 지움 (인자 없이 호출 시 전체 삭제하도록 storage에 되어있음)
+      const isEnabled = Config.get().kisEnabled;
+      // WsManager 재작동 유도
+      if (isEnabled) {
+        setEnableKis(false);
+        Config.set({ kisEnabled: false });
+        setTimeout(() => {
+          setEnableKis(true);
+          Config.set({ kisEnabled: true });
+        }, 300);
+      }
+      alert("인증 정보가 초기화되어 재연결을 시도합니다.");
+    }
   };
 
   // ─── 티커 창 관리 ────────────────────────────────────────────────
@@ -726,16 +743,26 @@ export default function ControlPanel() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-3 px-1">
+              <div className="flex items-center justify-between px-1">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => { setIsVirtual(true); Config.set({ isVirtual: true }); KisAuthStorage.clear(true); }}
+                    className={`text-[10px] font-black px-3 py-1 rounded-lg transition-all ${isVirtual ? 'bg-purple-500 text-white shadow-purple-500/20 shadow-lg' : 'bg-zinc-800 text-zinc-500'}`}
+                  >🧪 VIRTUAL (모의)</button>
+                  <button
+                    onClick={() => { setIsVirtual(false); Config.set({ isVirtual: false }); KisAuthStorage.clear(false); }}
+                    className={`text-[10px] font-black px-3 py-1 rounded-lg transition-all ${!isVirtual ? 'bg-blue-500 text-white shadow-blue-500/20 shadow-lg' : 'bg-zinc-800 text-zinc-500'}`}
+                  >💼 REAL (실계좌)</button>
+                  <span className="text-[10px] text-zinc-600 font-medium ml-1">현재: {isVirtual ? '모의투자' : '실계좌'} 모드로 동작 중</span>
+                </div>
                 <button
-                  onClick={() => { setIsVirtual(true); Config.set({ isVirtual: true }); KisAuthStorage.clear(true); }}
-                  className={`text-[10px] font-black px-3 py-1 rounded-lg transition-all ${isVirtual ? 'bg-purple-500 text-white shadow-purple-500/20 shadow-lg' : 'bg-zinc-800 text-zinc-500'}`}
-                >🧪 VIRTUAL (모의)</button>
-                <button
-                  onClick={() => { setIsVirtual(false); Config.set({ isVirtual: false }); KisAuthStorage.clear(false); }}
-                  className={`text-[10px] font-black px-3 py-1 rounded-lg transition-all ${!isVirtual ? 'bg-blue-500 text-white shadow-blue-500/20 shadow-lg' : 'bg-zinc-800 text-zinc-500'}`}
-                >💼 REAL (실계좌)</button>
-                <span className="text-[10px] text-zinc-600 font-medium ml-1">현재: {isVirtual ? '모의투자' : '실계좌'} 모드로 동작 중</span>
+                  onClick={clearAuthTokens}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/20 text-red-400 bg-red-500/10 hover:bg-red-500/20 active:scale-95 transition-all"
+                  title="세션 문제 발생 시 강제 초기화"
+                >
+                  <RefreshCw size={12} />
+                  <span className="text-[10px] font-black tracking-tighter">세션 파기 및 재연결</span>
+                </button>
               </div>
 
               {/* 실계좌 Key */}
