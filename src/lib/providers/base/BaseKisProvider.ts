@@ -21,6 +21,7 @@ export abstract class BaseKisProvider extends BaseProvider {
 
     return {
       symbol: result.symbol,
+      displayName: result.displayName,
       currentPrice: result.currentPrice,
       changeRate: result.changeRate,
       isUp: result.isUp,

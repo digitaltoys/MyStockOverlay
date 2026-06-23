@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import WsManager from "../components/WsManager";
 import { Config, DataSourceMode, KisAuthStorage, MyStock, StockPurchase, TossAuthStorage } from "../lib/storage";
+import { createMarketDataProvider } from "../lib/providers";
 
 // ─── 내 주식 관리 패널 ──────────────────────────────────────────────
 
@@ -243,6 +244,7 @@ export default function ControlPanel() {
 
   // 종목 목록
   const [tickerSymbols, setTickerSymbols] = useState<string[]>([]);
+  const [tickerDisplayNames, setTickerDisplayNames] = useState<Record<string, string>>({});
   const [newSymbol, setNewSymbol] = useState("");
 
   // 내 주식 데이터
@@ -320,6 +322,57 @@ export default function ControlPanel() {
 
     return () => { unlisten.then(f => f()); };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const resolveTickerNames = async () => {
+      const config = Config.get();
+      if (tickerSymbols.length === 0) {
+        setTickerDisplayNames({});
+        return;
+      }
+
+      const provider = createMarketDataProvider(config);
+      const entries = await Promise.allSettled(
+        tickerSymbols.map(async (symbol) => {
+          try {
+            const priceData = await provider.fetchPrice(symbol);
+            return [symbol, priceData.displayName ?? symbol] as const;
+          } catch {
+            return [symbol, symbol] as const;
+          }
+        })
+      );
+
+      if (cancelled) return;
+
+      const nextNames: Record<string, string> = {};
+      for (const entry of entries) {
+        if (entry.status === "fulfilled") {
+          const [symbol, displayName] = entry.value;
+          nextNames[symbol] = displayName;
+        }
+      }
+
+      setTickerDisplayNames((prev) => ({ ...prev, ...nextNames }));
+    };
+
+    resolveTickerNames();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    tickerSymbols,
+    dataSourceMode,
+    realAppKey,
+    realAppSecret,
+    virtualAppKey,
+    virtualAppSecret,
+    tossClientId,
+    tossClientSecret,
+  ]);
 
   // ─── 내 주식 업데이트 ─────────────────────────────────────────────
 
@@ -553,6 +606,7 @@ export default function ControlPanel() {
                   const isExpanded = expandedSymbol === symbol;
                   const ms = getMyStock(symbol);
                   const totalShares = ms ? ms.purchases.reduce((a, p) => a + p.qty, 0) : 0;
+                  const displayName = tickerDisplayNames[symbol] ?? symbol;
 
                   return (
                     <div
@@ -561,11 +615,16 @@ export default function ControlPanel() {
                     >
                       {/* 카드 헤더 */}
                       <div className="flex items-center justify-between p-3.5">
-                        <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-4 min-w-0">
                           <div className="w-1.5 h-1.5 rounded-full bg-zinc-600 group-hover/item:bg-white transition-colors" />
-                          <span className="font-mono text-sm tracking-widest font-bold text-zinc-300">
-                            {symbol}
-                          </span>
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-sm font-black tracking-tight text-zinc-100 truncate max-w-[220px]">
+                              {displayName}
+                            </span>
+                            <span className="font-mono text-[10px] tracking-widest font-bold text-zinc-500 truncate max-w-[220px]">
+                              {symbol}
+                            </span>
+                          </div>
                           {totalShares > 0 && (
                             <span className="text-[10px] font-black text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-2 py-0.5 rounded-full">
                               {totalShares.toLocaleString("ko-KR")}주 보유

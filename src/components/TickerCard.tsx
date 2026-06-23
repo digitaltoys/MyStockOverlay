@@ -22,26 +22,26 @@ export default function TickerCard({ data, isLocked = true }: TickerCardProps) {
   return (
     <div className={`flex items-center gap-2 w-full h-full font-sans transition-opacity duration-500 ${!isLocked ? 'opacity-90 relative' : 'opacity-100'} px-1`}>
       {/* Left side: Symbol Display */}
-      <div className="flex items-center gap-1.5 flex-shrink-0">
+      <div className="flex items-center gap-1.5 flex-shrink-0 min-w-0">
         <div className="flex flex-col min-w-0">
-          <span className="text-[10px] font-bold text-white/40 leading-none uppercase tracking-tighter truncate">
-            {symbol}
+          <span className="text-sm font-black text-white leading-tight tracking-tight drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] truncate max-w-[120px]">
+            {displayName ?? symbol}
           </span>
-          <div className="flex items-center gap-1 mt-0.5">
-            <span className="text-sm font-black text-white leading-tight tracking-tight drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] truncate max-w-[100px]">
-              {displayName ?? symbol}
+          <div className="flex items-center gap-1 mt-0.5 min-w-0">
+            <span className="text-[10px] font-bold text-white/40 leading-none uppercase tracking-tighter truncate">
+              {symbol}
             </span>
-      {dataSource !== 'KIS' && (
-        <span
-          className={`text-[8px] px-1 rounded-sm border leading-none h-2.5 flex items-center mt-0.5 ${
-            dataSource === 'Yahoo'
-              ? "bg-yellow-500/10 text-yellow-300 border-yellow-500/20"
-              : "bg-cyan-500/10 text-cyan-300 border-cyan-500/20"
-          }`}
-        >
-          {dataSource === 'Yahoo' ? 'YH' : 'TS'}
-        </span>
-      )}
+            {dataSource !== 'KIS' && (
+              <span
+                className={`text-[8px] px-1 rounded-sm border leading-none h-2.5 flex items-center ${
+                  dataSource === 'Yahoo'
+                    ? "bg-yellow-500/10 text-yellow-300 border-yellow-500/20"
+                    : "bg-cyan-500/10 text-cyan-300 border-cyan-500/20"
+                }`}
+              >
+                {dataSource === 'Yahoo' ? 'YH' : 'TS'}
+              </span>
+            )}
           </div>
         </div>
       </div>
