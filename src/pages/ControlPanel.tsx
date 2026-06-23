@@ -9,6 +9,7 @@ import {
 import WsManager from "../components/WsManager";
 import { Config, DataSourceMode, KisAuthStorage, MyStock, StockPurchase, TossAuthStorage } from "../lib/storage";
 import { createMarketDataProvider } from "../lib/providers";
+import { resolveTickerInput, type ResolvedSymbolCandidate } from "../lib/symbolResolver";
 
 // ─── 내 주식 관리 패널 ──────────────────────────────────────────────
 
@@ -246,6 +247,8 @@ export default function ControlPanel() {
   const [tickerSymbols, setTickerSymbols] = useState<string[]>([]);
   const [tickerDisplayNames, setTickerDisplayNames] = useState<Record<string, string>>({});
   const [newSymbol, setNewSymbol] = useState("");
+  const [pendingCandidates, setPendingCandidates] = useState<ResolvedSymbolCandidate[]>([]);
+  const [pendingQuery, setPendingQuery] = useState("");
 
   // 내 주식 데이터
   const [myStocks, setMyStocks] = useState<MyStock[]>([]);
@@ -466,16 +469,44 @@ export default function ControlPanel() {
     }
   };
 
-  const addTicker = async () => {
-    const s = newSymbol.trim().toUpperCase();
-    if (!s) return;
-    if (!tickerSymbols.includes(s)) {
-      const updated = [...tickerSymbols, s];
+  const addResolvedTicker = async (candidate: ResolvedSymbolCandidate) => {
+    const symbol = candidate.symbol.trim().toUpperCase();
+    if (!symbol) return;
+
+    if (!tickerSymbols.includes(symbol)) {
+      const updated = [...tickerSymbols, symbol];
       setTickerSymbols(updated);
       Config.set({ symbols: updated });
     }
-    await launchTicker(s);
+
+    setTickerDisplayNames((prev) => ({
+      ...prev,
+      [symbol]: candidate.displayName || prev[symbol] || symbol,
+    }));
+
+    await launchTicker(symbol);
     setNewSymbol("");
+    setPendingCandidates([]);
+    setPendingQuery("");
+  };
+
+  const addTicker = async () => {
+    const raw = newSymbol.trim();
+    if (!raw) return;
+
+    const resolved = await resolveTickerInput(raw, tickerDisplayNames);
+    if (resolved.length === 0) {
+      alert("종목을 찾지 못했습니다.");
+      return;
+    }
+
+    if (resolved.length === 1) {
+      await addResolvedTicker(resolved[0]);
+      return;
+    }
+
+    setPendingQuery(raw);
+    setPendingCandidates(resolved.slice(0, 6));
   };
 
   const removeTicker = (symbol: string) => {
@@ -587,9 +618,15 @@ export default function ControlPanel() {
               <div className="flex gap-2 mb-4">
                 <input
                   value={newSymbol}
-                  onChange={(e) => setNewSymbol(e.target.value)}
+                  onChange={(e) => {
+                    setNewSymbol(e.target.value);
+                    if (pendingCandidates.length > 0) {
+                      setPendingCandidates([]);
+                      setPendingQuery("");
+                    }
+                  }}
                   onKeyDown={(e) => e.key === 'Enter' && addTicker()}
-                  placeholder="종목코드 입력 (예: 0001, 005930, 122630)"
+                  placeholder="종목코드 또는 종목명 입력 (예: 0001, 삼성전자, TIGER 미국S&P500)"
                   className="flex-1 bg-white/5 border border-white/5 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-white/20 transition-all text-sm font-medium"
                 />
                 <button
@@ -599,6 +636,45 @@ export default function ControlPanel() {
                   <Plus size={20} />
                 </button>
               </div>
+
+              {pendingCandidates.length > 0 && (
+                <div className="mb-4 rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3">
+                  <div className="flex items-center justify-between gap-2 mb-3">
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-black tracking-widest text-cyan-300 uppercase">검색 결과</p>
+                      <p className="text-sm text-zinc-300 truncate">
+                        "{pendingQuery}"에 대한 후보를 선택하세요.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setPendingCandidates([]);
+                        setPendingQuery("");
+                      }}
+                      className="text-[10px] font-black px-2 py-1 rounded-lg bg-white/5 text-zinc-400 hover:text-white hover:bg-white/10 transition-colors"
+                    >
+                      닫기
+                    </button>
+                  </div>
+                  <div className="grid gap-2">
+                    {pendingCandidates.map((candidate) => (
+                      <button
+                        key={`${candidate.symbol}-${candidate.displayName}`}
+                        onClick={() => addResolvedTicker(candidate)}
+                        className="flex items-center justify-between gap-3 text-left px-3 py-2 rounded-lg bg-black/40 border border-white/5 hover:border-cyan-400/30 hover:bg-cyan-400/10 transition-colors"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-sm font-bold text-zinc-100 truncate">{candidate.displayName}</div>
+                          <div className="text-[10px] font-mono text-zinc-500 truncate">{candidate.symbol}</div>
+                        </div>
+                        <span className="text-[10px] font-black px-2 py-1 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 shrink-0">
+                          선택
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* 종목 카드 목록 */}
               <div className="grid gap-3">
