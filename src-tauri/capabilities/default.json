@@ -18,6 +18,9 @@
           "url": "https://query1.finance.yahoo.com/*"
         },
         {
+          "url": "https://kind.krx.co.kr/common/akc.jsp*"
+        },
+        {
           "url": "https://openapi.tossinvest.com/*"
         }
       ]
@@ -32,6 +35,9 @@
           "url": "https://query1.finance.yahoo.com/*"
         },
         {
+          "url": "https://kind.krx.co.kr/common/akc.jsp*"
+        },
+        {
           "url": "https://openapi.tossinvest.com/*"
         }
       ]
@@ -44,6 +50,9 @@
         },
         {
           "url": "https://query1.finance.yahoo.com/*"
+        },
+        {
+          "url": "https://kind.krx.co.kr/common/akc.jsp*"
         },
         {
           "url": "https://openapi.tossinvest.com/*"

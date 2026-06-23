@@ -10,6 +10,9 @@
         "url": "https://openapi.koreainvestment.com:9443/*"
       },
       {
+        "url": "https://kind.krx.co.kr/common/akc.jsp*"
+      },
+      {
         "url": "https://openapi.tossinvest.com/*"
       }
     ]

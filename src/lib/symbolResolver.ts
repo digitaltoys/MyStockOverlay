@@ -3,11 +3,11 @@ import { fetch as httpFetch } from "@tauri-apps/plugin-http";
 export interface ResolvedSymbolCandidate {
   symbol: string;
   displayName: string;
-  source: "existing" | "naver";
+  source: "existing" | "krx";
 }
 
 const SYMBOL_LIKE_PATTERN = /^[A-Za-z0-9.\-]{1,12}$/;
-const NAVER_SEARCH_URL = "https://finance.naver.com/search/searchList.naver";
+const KRX_AUTOCOMPLETE_URL = "https://kind.krx.co.kr/common/akc.jsp";
 const candidateCache = new Map<string, ResolvedSymbolCandidate[]>();
 
 function normalizeText(value: string): string {
@@ -62,44 +62,58 @@ function rankCandidates(query: string, candidates: ResolvedSymbolCandidate[]): R
   return [...exactMatches, ...prefixMatches, ...includesMatches, ...others];
 }
 
-async function searchNaverFinance(query: string): Promise<ResolvedSymbolCandidate[]> {
+function parseKrxAutocompletePayload(content: string): ResolvedSymbolCandidate[] {
+  const keywordMatch = content.match(/var myJSONObject = (\{.*?\});/s);
+  const codeMatch = content.match(/var myJSONObject2 = (\{.*?\});/s);
+
+  if (!keywordMatch || !codeMatch) return [];
+
+  try {
+    const keywordJson = JSON.parse(keywordMatch[1]) as { LIST?: Array<{ KEYWORD?: string }> };
+    const codeJson = JSON.parse(codeMatch[1]) as { LIST?: Array<{ NUM?: string }> };
+    const keywords = keywordJson.LIST ?? [];
+    const codes = codeJson.LIST ?? [];
+    const max = Math.min(keywords.length, codes.length);
+    const candidates: ResolvedSymbolCandidate[] = [];
+
+    for (let i = 0; i < max; i++) {
+      const displayName = keywords[i]?.KEYWORD?.trim();
+      const symbol = codes[i]?.NUM?.trim();
+      if (!displayName || !symbol) continue;
+      candidates.push({
+        symbol,
+        displayName,
+        source: "krx",
+      });
+    }
+
+    return dedupeCandidates(candidates);
+  } catch {
+    return [];
+  }
+}
+
+async function searchKrxAutocomplete(query: string): Promise<ResolvedSymbolCandidate[]> {
   const cached = candidateCache.get(query);
   if (cached) return cached;
 
-  const url = `${NAVER_SEARCH_URL}?query=${encodeURIComponent(query)}&page=1`;
+  const url = `${KRX_AUTOCOMPLETE_URL}?aa=test&q=${encodeURIComponent(query)}&s=2`;
   const response = await httpFetch(url, {
     method: "GET",
     headers: {
-      Accept: "text/html,application/xhtml+xml",
+      Accept: "text/javascript,text/plain,*/*",
       "User-Agent": "Mozilla/5.0",
     },
   });
 
   if (!response.ok) {
-    throw new Error(`네이버 금융 검색 실패: HTTP ${response.status}`);
+    throw new Error(`KRX 자동완성 검색 실패: HTTP ${response.status}`);
   }
 
-  const html = await response.text();
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, "text/html");
-  const links = Array.from(doc.querySelectorAll('a[href*="/item/main.naver?code="]'));
+  const text = await response.text();
+  const candidates = parseKrxAutocompletePayload(text);
 
-  const candidates = links
-    .map((link) => {
-      const href = link.getAttribute("href") || "";
-      const match = href.match(/[?&]code=([A-Za-z0-9.\-]+)/);
-      const symbol = match?.[1]?.trim();
-      const displayName = link.textContent?.trim().replace(/\s+/g, " ") || "";
-      if (!symbol || !displayName) return null;
-      return {
-        symbol,
-        displayName,
-        source: "naver" as const,
-      };
-    })
-    .filter(Boolean) as ResolvedSymbolCandidate[];
-
-  const ranked = dedupeCandidates(rankCandidates(query, candidates));
+  const ranked = rankCandidates(query, candidates);
   candidateCache.set(query, ranked);
   return ranked;
 }
@@ -134,7 +148,7 @@ export async function resolveTickerInput(
     return existingMatches;
   }
 
-  const searchResults = await searchNaverFinance(trimmed);
+  const searchResults = await searchKrxAutocomplete(trimmed);
   if (searchResults.length > 0) {
     return searchResults;
   }
