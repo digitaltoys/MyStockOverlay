@@ -1,10 +1,44 @@
-﻿import { fetch } from '@tauri-apps/plugin-http';
+import { invoke } from '@tauri-apps/api/core';
 import { KisAuthStorage } from './storage';
 import { getMarketStatus } from './market';
 import { kisRateLimiter } from './kisRateLimiter';
 import { ChartCacheManager } from './chartCache';
 import { resampleTo10Minutes } from './chartUtils';
 import { ChartPoint } from './types';
+
+// Rust 쪽에 구현된 KIS 전용 프록시 함수 응답 스펙
+interface KisFetchResponse {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+}
+
+/**
+ * Tauri Rust 백엔드의 reqwest 클라이언트를 직접 호출하여 WAF 차단을 우회합니다.
+ */
+export async function kisFetch(url: string, options: { method: string, headers: Record<string, string>, body?: string }) {
+  const result = await invoke<KisFetchResponse>("kis_fetch_proxy", {
+    url,
+    method: options.method,
+    headers: options.headers,
+    body: options.body || null,
+  });
+
+  if (result.status >= 400) {
+    try {
+      JSON.parse(result.body);
+      throw new Error(`[HTTP ${result.status}] ${result.body}`);
+    } catch {
+      throw new Error(`[HTTP ${result.status}] 비정상 응답(JSON 아님). URL: ${url} 본문: ${result.body.substring(0, 100)}`);
+    }
+  }
+
+  try {
+    return JSON.parse(result.body);
+  } catch {
+    throw new Error(`[HTTP ${result.status}] 파싱 실패(JSON 아님). URL: ${url} 본문: ${result.body.substring(0, 100)}`);
+  }
+}
 
 // KIS API Base URL (실전투자)
 const KIS_API_BASE = "https://openapi.koreainvestment.com:9443";
@@ -43,9 +77,6 @@ export function isEtfOrEtn(symbol: string): boolean {
 
 /**
  * Access Token 발급 로직
- */
-/**
- * Access Token 발급 로직
  * @param forceRefresh true일 경우 로컬 캐시를 무시하고 무조건 재발급 받음
  */
 export async function getKisAccessToken(appKey: string, appSecret: string, forceRefresh: boolean = false): Promise<string> {
@@ -62,28 +93,30 @@ export async function getKisAccessToken(appKey: string, appSecret: string, force
   // 2. 새로운 발급 작업 시작 (Lock 설정)
   tokenPromise = (async () => {
     try {
-      const response = await kisRateLimiter.enqueue(() => fetch(`${KIS_API_BASE}/oauth2/tokenP`, {
+      const data = await kisRateLimiter.enqueue(() => kisFetch(`${KIS_API_BASE}/oauth2/tokenP`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "application/json, text/plain, */*",
+          "Origin": "https://openapi.koreainvestment.com:9443",
+          "Referer": "https://openapi.koreainvestment.com:9443/"
+        },
         body: JSON.stringify({ grant_type: "client_credentials", appkey: appKey, appsecret: appSecret }),
       }));
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        // 분당 1회 제한(EGW00133)인 경우, 누군가 이미 발급했을 수 있으므로 캐시가 있다면 리턴
-        if (data.error_code === "EGW00133") {
-          const retryAuth = KisAuthStorage.get(false);
-          if (retryAuth) {
-            console.log("[Token] EGW00133 hit, reusing existing token in storage.");
-            return retryAuth.accessToken;
-          }
-        }
-        throw new Error(`Access Token 발급 실패: ${response.status} ${JSON.stringify(data)}`);
-      }
-
       KisAuthStorage.set({ accessToken: data.access_token, tokenTime: Date.now() }, false);
       return data.access_token;
+    } catch (err: any) {
+      if (err.message.includes("EGW00133")) {
+        const retryAuth = KisAuthStorage.get(false);
+        if (retryAuth) {
+          console.log("[Token] EGW00133 hit, reusing existing token in storage.");
+          return retryAuth.accessToken;
+        }
+      }
+      console.error(`[KisApi][Token] Fetch Failed.`, err);
+      throw err;
     } finally {
       // 작업 완료 후 락 해제
       tokenPromise = null;
@@ -97,10 +130,14 @@ export async function getKisAccessToken(appKey: string, appSecret: string, force
  * 웹소켓 승인키(Approval Key) 발급
  */
 export async function getKisWsApprovalKey(appKey: string, appSecret: string): Promise<string> {
-  const response = await kisRateLimiter.enqueue(() => fetch(`${KIS_API_BASE}/oauth2/Approval`, {
+  const data = await kisRateLimiter.enqueue(() => kisFetch(`${KIS_API_BASE}/oauth2/Approval`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept": "application/json, text/plain, */*",
+      "Origin": "https://openapi.koreainvestment.com:9443",
+      "Referer": "https://openapi.koreainvestment.com:9443/"
     },
     body: JSON.stringify({
       grant_type: "client_credentials",
@@ -109,13 +146,6 @@ export async function getKisWsApprovalKey(appKey: string, appSecret: string): Pr
     }),
   }));
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error("KIS WS Approval Error:", response.status, errorText);
-    throw new Error(`WS Approval Key 발급 실패: ${response.status} ${errorText}`);
-  }
-
-  const data = await response.json();
   return data.approval_key;
 }
 
@@ -123,7 +153,7 @@ export async function getKisWsApprovalKey(appKey: string, appSecret: string): Pr
  * REST API로 현재가 단건 조회 (장 전/후 또는 초기값 로드용)
  */
 export async function fetchCurrentPrice(appKey: string, appSecret: string, symbol: string): Promise<KisTickerData> {
-  const accessToken = await getKisAccessToken(appKey, appSecret);
+  let accessToken = await getKisAccessToken(appKey, appSecret);
 
   const isIndex = isIndexSymbol(symbol);
   
@@ -134,32 +164,38 @@ export async function fetchCurrentPrice(appKey: string, appSecret: string, symbo
   // FHPUP02100000 : 국내주식 업종지수 현재가
   const trId = isIndex ? "FHPUP02100000" : "FHKST01010100";
 
-  const response = await kisRateLimiter.enqueue(() => fetch(
-    url,
-    {
-      method: "GET",
-      headers: {
-        "authorization": `Bearer ${accessToken}`,
-        "appkey": appKey,
-        "appsecret": appSecret,
-        "tr_id": trId,
-        "content-type": "application/json",
-        "custtype": "P",
-      },
+  let data;
+  try {
+    data = await kisRateLimiter.enqueue(() => kisFetch(
+      url,
+      {
+        method: "GET",
+        headers: {
+          "authorization": `Bearer ${accessToken}`,
+          "appkey": appKey,
+          "appsecret": appSecret,
+          "tr_id": trId,
+          "content-type": "application/json",
+          "custtype": "P",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "application/json, text/plain, */*",
+          "Origin": "https://openapi.koreainvestment.com:9443",
+          "Referer": "https://openapi.koreainvestment.com:9443/"
+        },
+      }
+    ));
+  } catch (error: any) {
+    // 토큰 만료 에러 (EGW00123) 시 강제 재발급 및 재시도 (1회 한정)
+    if (error.message.includes("EGW00123")) {
+      console.log(`[Token Expired] fetchCurrentPrice(${symbol}) EGW00123 감지, 토큰 강제 갱신 및 재시도 중...`);
+      accessToken = await getKisAccessToken(appKey, appSecret, true);
+      return fetchCurrentPrice(appKey, appSecret, symbol); // 재귀 호출
     }
-  ));
-
-  const data = await response.json();
-
-  // 토큰 만료 에러 (EGW00123) 시 강제 재발급 및 재시도 (1회 한정)
-  if (!response.ok && data.msg_cd === "EGW00123") {
-    console.log(`[Token Expired] fetchCurrentPrice(${symbol}) EGW00123 감지, 토큰 강제 갱신 및 재시도 중...`);
-    await getKisAccessToken(appKey, appSecret, true);
-    return fetchCurrentPrice(appKey, appSecret, symbol);
+    throw new Error(`현재가 조회 실패: ${error.message}`);
   }
 
-  if (!response.ok) {
-    throw new Error(`현재가 조회 실패: ${response.status} ${JSON.stringify(data)}`);
+  if (data.rt_cd !== '0') {
+    throw new Error(`현재가 조회 실패: ${data.msg1} (${data.msg_cd})`);
   }
 
   const output = data.output;
@@ -197,34 +233,41 @@ export async function fetchCurrentPrice(appKey: string, appSecret: string, symbo
  * REST API로 현재가 단건 조회 (NXT 시장용)
  */
 export async function fetchCurrentPriceNxt(appKey: string, appSecret: string, symbol: string): Promise<KisTickerData> {
-  const accessToken = await getKisAccessToken(appKey, appSecret);
+  let accessToken = await getKisAccessToken(appKey, appSecret);
 
-  const response = await kisRateLimiter.enqueue(() => fetch(
-    `https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/inquire-price?fid_cond_mrkt_div_code=NX&fid_input_iscd=${symbol}`,
-    {
-      method: "GET",
-      headers: {
-        "authorization": `Bearer ${accessToken}`,
-        "appkey": appKey,
-        "appsecret": appSecret,
-        "tr_id": "FHKST01010100",
-        "content-type": "application/json",
-      },
+  let data;
+  try {
+    data = await kisRateLimiter.enqueue(() => kisFetch(
+      `https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/inquire-price?fid_cond_mrkt_div_code=NX&fid_input_iscd=${symbol}`,
+      {
+        method: "GET",
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          appkey: appKey,
+          appsecret: appSecret,
+          tr_id: "FHKST01010100",
+          "content-type": "application/json",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "application/json, text/plain, */*",
+          "Origin": "https://openapi.koreainvestment.com:9443",
+          "Referer": "https://openapi.koreainvestment.com:9443/"
+        },
+      }
+    ));
+  } catch (error: any) {
+    // 토큰 만료 에러 (EGW00123) 시 강제 재발급 및 재시도
+    if (error.message.includes("EGW00123")) {
+      console.log(`[Token Expired] fetchCurrentPriceNxt(${symbol}) EGW00123 감지, 토큰 강제 갱신 중...`);
+      accessToken = await getKisAccessToken(appKey, appSecret, true);
+      return fetchCurrentPriceNxt(appKey, appSecret, symbol); // 재귀 호출
     }
-  ));
-
-  const data = await response.json();
-
-  // 토큰 만료 에러 (EGW00123) 시 강제 재발급 및 재시도
-  if (!response.ok && data.msg_cd === "EGW00123") {
-    console.log(`[Token Expired] fetchCurrentPriceNxt(${symbol}) EGW00123 감지, 토큰 강제 갱신 중...`);
-    await getKisAccessToken(appKey, appSecret, true);
-    return fetchCurrentPriceNxt(appKey, appSecret, symbol);
+    throw new Error(`NXT 현재가 조회 실패: ${error.message}`);
   }
 
-  if (!response.ok) {
-    throw new Error(`NXT 현재가 조회 실패: ${response.status} ${JSON.stringify(data)}`);
+  if (data.rt_cd !== '0') {
+    throw new Error(`NXT 현재가 조회 실패: ${data.msg1} (${data.msg_cd})`);
   }
+
   const output = data.output;
   if (!output || !output.stck_prpr || output.stck_prpr === "0") {
     throw new Error(`NXT 현재가 데이터 부재 (${symbol})`);
@@ -363,7 +406,7 @@ export async function fetchIntradayChart(appKey: string, appSecret: string, symb
   if (isIndex) {
     try {
       const url = `${KIS_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-time-indexchartprice?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=${symbol}&FID_INPUT_HOUR_1=60&FID_PW_DATA_INCU_YN=N&FID_ETC_CLS_CODE=0`;
-      const response = await kisRateLimiter.enqueue(() => fetch(url, {
+      const data = await kisRateLimiter.enqueue(() => kisFetch(url, {
         method: "GET",
         headers: {
           "authorization": `Bearer ${accessToken}`,
@@ -372,13 +415,25 @@ export async function fetchIntradayChart(appKey: string, appSecret: string, symb
           "tr_id": trId,
           "content-type": "application/json",
           "custtype": "P",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "application/json, text/plain, */*",
+          "Origin": "https://openapi.koreainvestment.com:9443",
+          "Referer": "https://openapi.koreainvestment.com:9443/"
         },
       }));
-      if (!response.ok) {
-        console.error(`[KIS API] Index chart response not OK: ${response.status}`);
+      
+      console.log(`[KisApi] index chart response ok for ${symbol}`);
+
+      if (data.msg_cd === "EGW00123") {
+        console.warn(`[KisApi] Token expired during fetchIntradayChart(Index) for ${symbol}. Retrying...`);
+        accessToken = await getKisAccessToken(appKey, appSecret, true);
+        return fetchIntradayChart(appKey, appSecret, symbol);
+      }
+
+      if (data.rt_cd !== '0') {
+        console.error(`[KIS API] Index chart response not OK: ${data.msg1} (${data.msg_cd})`);
         return [];
       }
-      const data = await response.json();
       const output = data.output2;
       
       console.log(`[KIS API] ${symbol} Index Chart Response:`, { 
@@ -456,28 +511,33 @@ export async function fetchIntradayChart(appKey: string, appSecret: string, symb
       }
 
       const url = `${KIS_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice?FID_COND_MRKT_DIV_CODE=${market}&FID_INPUT_ISCD=${symbol}&FID_INPUT_HOUR_1=${nextHour}&FID_PW_DATA_INCU_YN=N&FID_ETC_CLS_CODE=&FID_PW_DATA_INC_CLQL_CODE=N`;
-      let response = await kisRateLimiter.enqueue(() => fetch(url, {
+      let data = await kisRateLimiter.enqueue(() => kisFetch(url, {
         method: "GET",
         headers: {
-          "authorization": `Bearer ${accessToken}`,
-          "appkey": appKey,
-          "appsecret": appSecret,
-          "tr_id": trId,
+          authorization: `Bearer ${accessToken}`,
+          appkey: appKey,
+          appsecret: appSecret,
+          tr_id: trId,
           "content-type": "application/json",
-          "custtype": "P",
+          custtype: "P",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "application/json, text/plain, */*",
+          "Origin": "https://openapi.koreainvestment.com:9443",
+          "Referer": "https://openapi.koreainvestment.com:9443/"
         },
       }));
 
-      let data = await response.json();
-
       // 토큰 만료 에러 감지 시 갱신 후 재시도
-      if (!response.ok && data.msg_cd === "EGW00123") {
+      if (data.msg_cd === "EGW00123") {
         console.log(`[Token Expired] fetchIntradayChart(${symbol}) EGW00123 감지, 갱신 중...`);
         accessToken = await getKisAccessToken(appKey, appSecret, true);
         page--; continue;
       }
 
-      if (!response.ok) break;
+      if (data.rt_cd !== '0') {
+        // 에러 발생 시 더 이상 진행하지 않음
+        break;
+      }
 
       let output = data.output2;
 
@@ -499,7 +559,7 @@ export async function fetchIntradayChart(appKey: string, appSecret: string, symb
       if (market === "NX" && validItems.length === 0) {
         console.log(`[Chart API] ${symbol} NX valid data empty, retrying with Regular(J) market...`);
         const fallbackUrl = `${KIS_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_HOUR_1=${nextHour}&FID_PW_DATA_INCU_YN=N&FID_ETC_CLS_CODE=&FID_PW_DATA_INC_CLQL_CODE=N`;
-        const fbResponse = await kisRateLimiter.enqueue(() => fetch(fallbackUrl, {
+        const fbData = await kisRateLimiter.enqueue(() => kisFetch(fallbackUrl, {
           method: "GET",
           headers: {
             "authorization": `Bearer ${accessToken}`,
@@ -508,23 +568,31 @@ export async function fetchIntradayChart(appKey: string, appSecret: string, symb
             "tr_id": trId,
             "content-type": "application/json",
             "custtype": "P",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://openapi.koreainvestment.com:9443",
+            "Referer": "https://openapi.koreainvestment.com:9443/"
           },
         }));
-        if (fbResponse.ok) {
-          const fbData = await fbResponse.json();
-          const fbOutput = fbData.output2;
-          if (fbOutput && Array.isArray(fbOutput)) {
-            validItems = fbOutput
-              .filter((item: any) => {
-                const p = parseFloat(item.stck_prpr);
-                return p > 0 && item.stck_cntg_hour >= "080000" && item.stck_cntg_hour <= "180000";
-              })
-              .map((item: any) => ({
-                price: parseFloat(item.stck_prpr),
-                date: item.stck_bsop_date as string,
-                hour: item.stck_cntg_hour as string,
-              }));
-          }
+
+        if (fbData.msg_cd === "EGW00123") {
+          console.log(`[Token Expired] fetchIntradayChart(${symbol}) fallback EGW00123 감지, 갱신 중...`);
+          accessToken = await getKisAccessToken(appKey, appSecret, true);
+          page--; continue;
+        }
+
+        const fbOutput = fbData.output2;
+        if (fbOutput && Array.isArray(fbOutput)) {
+          validItems = fbOutput
+            .filter((item: any) => {
+              const p = parseFloat(item.stck_prpr);
+              return p > 0 && item.stck_cntg_hour >= "080000" && item.stck_cntg_hour <= "180000";
+            })
+            .map((item: any) => ({
+              price: parseFloat(item.stck_prpr),
+              date: item.stck_bsop_date as string,
+              hour: item.stck_cntg_hour as string,
+            }));
         }
       }
 

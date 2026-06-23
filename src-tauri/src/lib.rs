@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+use std::collections::HashMap;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 #[cfg(target_os = "windows")]
 unsafe fn force_topmost_win32(hwnd: *mut core::ffi::c_void) {
@@ -166,6 +168,66 @@ async fn broadcast_ticker_error(
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+pub struct KisFetchResponse {
+    pub status: u16,
+    pub headers: HashMap<String, String>,
+    pub body: String,
+}
+
+#[tauri::command]
+async fn kis_fetch_proxy(
+    url: String,
+    method: String,
+    headers: HashMap<String, String>,
+    body: Option<String>,
+) -> Result<KisFetchResponse, String> {
+    
+    let mut req_headers = HeaderMap::new();
+    for (k, v) in headers {
+        if let (Ok(name), Ok(value)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(&v)) {
+            req_headers.insert(name, value);
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true) // KIS TLS 검열 회피 보조
+        .brotli(true)
+        .gzip(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let req_builder = match method.as_str() {
+        "POST" => client.post(&url),
+        "GET" | _ => client.get(&url),
+    };
+
+    let req_builder = req_builder.headers(req_headers);
+    let req_builder = if let Some(b) = body {
+        req_builder.body(b)
+    } else {
+        req_builder
+    };
+
+    let res = req_builder.send().await.map_err(|e| e.to_string())?;
+
+    let status = res.status().as_u16();
+    let mut res_headers = HashMap::new();
+    for (name, value) in res.headers() {
+        if let Ok(val_str) = value.to_str() {
+            res_headers.insert(name.to_string(), val_str.to_string());
+        }
+    }
+
+    let body_text = res.text().await.map_err(|e| e.to_string())?;
+
+    Ok(KisFetchResponse {
+        status,
+        headers: res_headers,
+        body: body_text,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -238,7 +300,8 @@ pub fn run() {
             broadcast_border_toggle,
             broadcast_scale_changed,
             broadcast_ticker_data,
-            broadcast_ticker_error
+            broadcast_ticker_error,
+            kis_fetch_proxy
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

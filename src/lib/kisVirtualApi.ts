@@ -1,9 +1,8 @@
-import { fetch } from '@tauri-apps/plugin-http';
 import { kisRateLimiter } from './kisRateLimiter';
 import { ChartCacheManager } from './chartCache';
 import { resampleTo10Minutes } from './chartUtils';
 import { KisAuthStorage } from './storage';
-import { KisTickerData, isIndexSymbol, symbolTypeCache, isEtfOrEtn } from './kisApi';
+import { KisTickerData, isIndexSymbol, symbolTypeCache, isEtfOrEtn, kisFetch } from './kisApi';
 import { getMarketStatus } from './market';
 import { ChartPoint } from './types';
 
@@ -31,28 +30,30 @@ export async function getKisVirtualAccessToken(appKey: string, appSecret: string
   // 2. 새로운 발급 작업 시작 (Lock 설정)
   virtualTokenPromise = (async () => {
     try {
-      const response = await kisRateLimiter.enqueue(() => fetch(`${KIS_VIRTUAL_API_BASE}/oauth2/tokenP`, {
+      const data = await kisRateLimiter.enqueue(() => kisFetch(`${KIS_VIRTUAL_API_BASE}/oauth2/tokenP`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "application/json, text/plain, */*",
+          "Origin": "https://openapivts.koreainvestment.com:29443",
+          "Referer": "https://openapivts.koreainvestment.com:29443/"
+        },
         body: JSON.stringify({ grant_type: "client_credentials", appkey: appKey, appsecret: appSecret }),
       }));
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        // 분당 1회 제한(EGW00133)인 경우, 누군가 이미 발급했을 수 있으므로 캐시가 있다면 리턴
-        if (data.error_code === "EGW00133") {
-          const retryAuth = KisAuthStorage.get(true);
-          if (retryAuth) {
-            console.log("[Virtual Token] EGW00133 hit, reusing existing token in storage.");
-            return retryAuth.accessToken;
-          }
-        }
-        throw new Error(`모의투자 Access Token 발급 실패: ${response.status} ${JSON.stringify(data)}`);
-      }
-
       KisAuthStorage.set({ accessToken: data.access_token, tokenTime: Date.now() }, true);
       return data.access_token;
+    } catch (err: any) {
+      if (err.message && err.message.includes("EGW00133")) {
+        const retryAuth = KisAuthStorage.get(true);
+        if (retryAuth) {
+          console.log("[Virtual Token] EGW00133 hit, reusing existing token in storage.");
+          return retryAuth.accessToken;
+        }
+      }
+      console.error(`[Virtual KisApi][Token] Fetch Failed.`, err);
+      throw err;
     } finally {
       // 작업 완료 후 락 해제
       virtualTokenPromise = null;
@@ -66,10 +67,14 @@ export async function getKisVirtualAccessToken(appKey: string, appSecret: string
  * 웹소켓 승인키(Approval Key) 발급 (모의투자)
  */
 export async function getKisVirtualWsApprovalKey(appKey: string, appSecret: string): Promise<string> {
-  const response = await kisRateLimiter.enqueue(() => fetch(`${KIS_VIRTUAL_API_BASE}/oauth2/Approval`, {
+  const data = await kisRateLimiter.enqueue(() => kisFetch(`${KIS_VIRTUAL_API_BASE}/oauth2/Approval`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept": "application/json, text/plain, */*",
+      "Origin": "https://openapivts.koreainvestment.com:29443",
+      "Referer": "https://openapivts.koreainvestment.com:29443/"
     },
     body: JSON.stringify({
       grant_type: "client_credentials",
@@ -78,12 +83,6 @@ export async function getKisVirtualWsApprovalKey(appKey: string, appSecret: stri
     }),
   }));
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`모의투자 WS Approval Key 발급 실패: ${response.status} ${errorText}`);
-  }
-
-  const data = await response.json();
   return data.approval_key;
 }
 
@@ -94,37 +93,42 @@ export async function fetchVirtualCurrentPrice(appKey: string, appSecret: string
   const accessToken = await getKisVirtualAccessToken(appKey, appSecret);
   const isIndex = isIndexSymbol(symbol);
   
-  const url = isIndex
+    const url = isIndex
     ? `${KIS_VIRTUAL_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-index-price?fid_cond_mrkt_div_code=U&fid_input_iscd=${symbol}`
     : `${KIS_VIRTUAL_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-price?fid_cond_mrkt_div_code=J&fid_input_iscd=${symbol}`;
     
   const trId = isIndex ? "FHPUP02100000" : "FHKST01010100";
 
-  const response = await kisRateLimiter.enqueue(() => fetch(
-    url,
-    {
-      method: "GET",
-      headers: {
-        "authorization": `Bearer ${accessToken}`,
-        "appkey": appKey,
-        "appsecret": appSecret,
-        "tr_id": trId,
-        "content-type": "application/json",
-      },
+  let data;
+  try {
+    data = await kisRateLimiter.enqueue(() => kisFetch(
+      url,
+      {
+        method: "GET",
+        headers: {
+          "authorization": `Bearer ${accessToken}`,
+          "appkey": appKey,
+          "appsecret": appSecret,
+          "tr_id": trId,
+          "content-type": "application/json",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "application/json, text/plain, */*",
+          "Origin": "https://openapivts.koreainvestment.com:29443",
+          "Referer": "https://openapivts.koreainvestment.com:29443/"
+        },
+      }
+    ));
+  } catch (error: any) {
+    if (error.message && error.message.includes("EGW00123")) {
+      console.log(`[Token Expired] fetchVirtualCurrentPrice(${symbol}) EGW00123 감지, 토큰 갱신 중...`);
+      await getKisVirtualAccessToken(appKey, appSecret, true);
+      return fetchVirtualCurrentPrice(appKey, appSecret, symbol);
     }
-  ));
-
-  const data = await response.json();
-
-  // 토큰 만료 에러 (EGW00123) 시 강제 재발급 및 재시도
-  if (!response.ok && data.msg_cd === "EGW00123") {
-    console.log(`[Token Expired] fetchVirtualCurrentPrice(${symbol}) EGW00123 감지, 토큰 갱신 중...`);
-    await getKisVirtualAccessToken(appKey, appSecret, true);
-    return fetchVirtualCurrentPrice(appKey, appSecret, symbol);
+    throw new Error(`모의투자 현재가 조회 실패: ${error.message}`);
   }
 
-  if (!response.ok) {
-    throw new Error(`모의투자 현재가 조회 실패: ${response.status} ${JSON.stringify(data)}`);
+  if (data.rt_cd !== '0') {
+    throw new Error(`모의투자 현재가 조회 실패: ${data.msg1}`);
   }
   const output = data.output;
 
@@ -168,7 +172,7 @@ export async function fetchVirtualIntradayChart(appKey: string, appSecret: strin
   if (isIndex) {
     try {
       const url = `${KIS_VIRTUAL_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-time-indexchartprice?FID_COND_MRKT_DIV_CODE=U&FID_INPUT_ISCD=${symbol}&FID_INPUT_HOUR_1=60&FID_PW_DATA_INCU_YN=N&FID_ETC_CLS_CODE=0`;
-      const response = await kisRateLimiter.enqueue(() => fetch(url, {
+      const data = await kisRateLimiter.enqueue(() => kisFetch(url, {
         method: "GET",
         headers: {
           "authorization": `Bearer ${accessToken}`,
@@ -177,13 +181,16 @@ export async function fetchVirtualIntradayChart(appKey: string, appSecret: strin
           "tr_id": trId,
           "content-type": "application/json",
           "custtype": "P",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "application/json, text/plain, */*",
+          "Origin": "https://openapivts.koreainvestment.com:29443",
+          "Referer": "https://openapivts.koreainvestment.com:29443/"
         },
       }));
-      if (!response.ok) {
-        console.error(`[Virtual KIS API] Index chart response not OK: ${response.status}`);
+      if (data.rt_cd !== '0') {
+        console.error(`[Virtual KIS API] Index chart response not OK: ${data.msg1}`);
         return [];
       }
-      const data = await response.json();
       const output = data.output2;
       
       console.log(`[Virtual KIS API] ${symbol} Index Chart Response:`, { 
@@ -260,28 +267,39 @@ export async function fetchVirtualIntradayChart(appKey: string, appSecret: strin
       }
 
       const url = `${KIS_VIRTUAL_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice?FID_COND_MRKT_DIV_CODE=${market}&FID_INPUT_ISCD=${symbol}&FID_INPUT_HOUR_1=${nextHour}&FID_PW_DATA_INCU_YN=N&FID_ETC_CLS_CODE=&FID_PW_DATA_INC_CLQL_CODE=N`;
-      let response = await kisRateLimiter.enqueue(() => fetch(url, {
-        method: "GET",
-        headers: {
-          "authorization": `Bearer ${accessToken}`,
-          "appkey": appKey,
-          "appsecret": appSecret,
-          "tr_id": trId,
-          "content-type": "application/json",
-          "custtype": "P",
-        },
-      }));
+      let data;
+      try {
+        data = await kisRateLimiter.enqueue(() => kisFetch(url, {
+          method: "GET",
+          headers: {
+            "authorization": `Bearer ${accessToken}`,
+            "appkey": appKey,
+            "appsecret": appSecret,
+            "tr_id": trId,
+            "content-type": "application/json",
+            "custtype": "P",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://openapivts.koreainvestment.com:29443",
+            "Referer": "https://openapivts.koreainvestment.com:29443/"
+          },
+        }));
+      } catch (err: any) {
+        if (err.message && err.message.includes("EGW00123")) {
+          console.log(`[Token Expired] fetchVirtualIntradayChart(${symbol}) EGW00123 감지, 갱신 중...`);
+          accessToken = await getKisVirtualAccessToken(appKey, appSecret, true);
+          page--; continue;
+        }
+        break;
+      }
 
-      let data = await response.json();
-
-      // 토큰 만료 에러 감지 시 갱신 후 재시도
-      if (!response.ok && data.msg_cd === "EGW00123") {
+      if (data.msg_cd === "EGW00123") {
         console.log(`[Token Expired] fetchVirtualIntradayChart(${symbol}) EGW00123 감지, 갱신 중...`);
         accessToken = await getKisVirtualAccessToken(appKey, appSecret, true);
         page--; continue;
       }
 
-      if (!response.ok) break;
+      if (data.rt_cd !== '0') break;
 
       let output = data.output2;
 
@@ -303,32 +321,39 @@ export async function fetchVirtualIntradayChart(appKey: string, appSecret: strin
       if (market === "NX" && validItems.length === 0) {
         console.log(`[Virtual Chart API] ${symbol} NX valid data empty, retrying with Regular(J) market...`);
         const fallbackUrl = `${KIS_VIRTUAL_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=${symbol}&FID_INPUT_HOUR_1=${nextHour}&FID_PW_DATA_INCU_YN=N&FID_ETC_CLS_CODE=&FID_PW_DATA_INC_CLQL_CODE=N`;
-        const fbResponse = await kisRateLimiter.enqueue(() => fetch(fallbackUrl, {
-          method: "GET",
-          headers: {
-            "authorization": `Bearer ${accessToken}`,
-            "appkey": appKey,
-            "appsecret": appSecret,
-            "tr_id": trId,
-            "content-type": "application/json",
-            "custtype": "P",
-          },
-        }));
-        if (fbResponse.ok) {
-          const fbData = await fbResponse.json();
-          const fbOutput = fbData.output2;
-          if (fbOutput && Array.isArray(fbOutput)) {
-            validItems = fbOutput
-              .filter((item: any) => {
-                const p = parseFloat(item.stck_prpr);
-                return p > 0 && item.stck_cntg_hour >= "080000" && item.stck_cntg_hour <= "180000";
-              })
-              .map((item: any) => ({
-                price: parseFloat(item.stck_prpr),
-                date: item.stck_bsop_date as string,
-                hour: item.stck_cntg_hour as string,
-              }));
+        try {
+          const fbData = await kisRateLimiter.enqueue(() => kisFetch(fallbackUrl, {
+            method: "GET",
+            headers: {
+              authorization: `Bearer ${accessToken}`,
+              appkey: appKey,
+              appsecret: appSecret,
+              tr_id: "FHKST03010200",
+              "content-type": "application/json",
+              custtype: "P",
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+              "Accept": "application/json, text/plain, */*",
+              "Origin": "https://openapivts.koreainvestment.com:29443",
+              "Referer": "https://openapivts.koreainvestment.com:29443/"
+            },
+          }));
+          if (fbData.rt_cd === '0') {
+            const fbOutput = fbData.output2;
+            if (fbOutput && Array.isArray(fbOutput)) {
+              validItems = fbOutput
+                .filter((item: any) => {
+                  const p = parseFloat(item.stck_prpr);
+                  return p > 0 && item.stck_cntg_hour >= "080000" && item.stck_cntg_hour <= "180000";
+                })
+                .map((item: any) => ({
+                  price: parseFloat(item.stck_prpr),
+                  date: item.stck_bsop_date as string,
+                  hour: item.stck_cntg_hour as string,
+                }));
+            }
           }
+        } catch (fbError) {
+          console.warn(`[Virtual Chart API] Fallback to Regular(J) market failed for ${symbol}:`, fbError);
         }
       }
 
@@ -401,26 +426,45 @@ export async function fetchVirtualIntradayChart(appKey: string, appSecret: strin
 export async function fetchVirtualCurrentPriceNxt(appKey: string, appSecret: string, symbol: string): Promise<KisTickerData> {
   const accessToken = await getKisVirtualAccessToken(appKey, appSecret);
 
-  const response = await kisRateLimiter.enqueue(() => fetch(
-    `${KIS_VIRTUAL_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-price?fid_cond_mrkt_div_code=NX&fid_input_iscd=${symbol}`,
-    {
-      method: "GET",
-      headers: {
-        "authorization": `Bearer ${accessToken}`,
-        "appkey": appKey,
-        "appsecret": appSecret,
-        "tr_id": "FHKST01010100",
+  let data;
+  try {
+    data = await kisRateLimiter.enqueue(() => kisFetch(
+      `${KIS_VIRTUAL_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-price?fid_cond_mrkt_div_code=NX&fid_input_iscd=${symbol}`,
+      {
+        method: "GET",
+        headers: {
+        authorization: `Bearer ${accessToken}`,
+        appkey: appKey,
+        appsecret: appSecret,
+        tr_id: "FHKST01010100", 
         "content-type": "application/json",
-      },
+        custtype: "P",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://openapivts.koreainvestment.com:29443",
+        "Referer": "https://openapivts.koreainvestment.com:29443/"
+      }
+    }));
+  } catch (error: any) {
+    // 토큰 만료 에러 (EGW00123) 시 강제 재발급 및 재시도
+    if (error.message && error.message.includes("EGW00123")) {
+      console.log(`[Token Expired] fetchVirtualCurrentPriceNxt(${symbol}) EGW00123 감지, 토큰 갱신 중...`);
+      await getKisVirtualAccessToken(appKey, appSecret, true);
+      return fetchVirtualCurrentPriceNxt(appKey, appSecret, symbol);
     }
-  ));
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`모의투자 NXT 현재가 조회 실패: ${response.status} ${errorText}`);
+    throw new Error(`모의투자 NXT 현재가 조회 실패: ${error.message}`);
   }
 
-  const data = await response.json();
+  if (data.msg_cd === "EGW00123") {
+    console.log(`[Token Expired] fetchVirtualCurrentPriceNxt(${symbol}) EGW00123 감지, 토큰 갱신 중...`);
+    await getKisVirtualAccessToken(appKey, appSecret, true);
+    return fetchVirtualCurrentPriceNxt(appKey, appSecret, symbol);
+  }
+
+  if (data.rt_cd !== '0') {
+    throw new Error(`모의투자 NXT 현재가 조회 실패: ${data.msg1}`);
+  }
+
   const output = data.output;
   if (!output || !output.stck_prpr || output.stck_prpr === "0") {
     throw new Error(`모의투자 NXT 현재가 데이터 부재 (${symbol})`);
