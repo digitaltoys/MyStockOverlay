@@ -52,6 +52,16 @@ export class ChartCacheManager {
     
     localStorage.setItem(CACHE_KEY, JSON.stringify(store));
   }
+
+  /**
+   * 특정 심볼의 캐시된 기준가를 조회
+   */
+  static getBasePrice(symbol: string): number | null {
+    const store = this.getStore();
+    const data = store[symbol];
+    if (!data?.basePrice || isNaN(data.basePrice)) return null;
+    return data.basePrice;
+  }
   /**
    * 오늘 날짜 문자열 반환 (YYYYMMDD)
    */

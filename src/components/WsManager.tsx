@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Config } from "../lib/storage";
 import { useInitialLoad } from "../hooks/useInitialLoad";
-import { useWebSocket } from "../hooks/useWebSocket";
-import { useFallback } from "../hooks/useFallback";
+import { useRealtimeSync } from "../hooks/useRealtimeSync";
 
 /**
  * SRP: WsManager는 더 이상 직접 데이터를 수집하지 않고, 하위 훅(Hooks)들을 컴포지션하여
@@ -13,6 +12,7 @@ export default function WsManager() {
   const activeSymbolsRef = useRef<Set<string>>(new Set());
   const chartDataRefs = useRef<Map<string, any[]>>(new Map());
   const lastUpdateTimesRef = useRef<Map<string, number>>(new Map());
+  const configSignatureRef = useRef<string>("");
   
   // 리렌더링 트리거 및 설정 동기화
   const [, setTick] = useState(0);
@@ -22,6 +22,18 @@ export default function WsManager() {
     const checkInterval = setInterval(() => {
       const config = Config.get();
       let changed = false;
+      const { appKey, appSecret } = Config.getActiveKeys();
+      const configSignature = [
+        config.dataSourceMode,
+        config.tossPollingIntervalSec,
+        appKey,
+        appSecret,
+      ].join("|");
+
+      if (configSignatureRef.current !== configSignature) {
+        configSignatureRef.current = configSignature;
+        changed = true;
+      }
 
       // 새 종목이 추가되었거나 삭제되었는지 비교
       if (config.activeSymbols.length !== activeSymbolsRef.current.size) {
@@ -49,11 +61,8 @@ export default function WsManager() {
   // 1. 앱 진입 시 / 종목 추가 시 1회 REST 조회
   useInitialLoad(activeSymbolsRef.current, chartDataRefs, lastUpdateTimesRef);
 
-  // 2. 실시간 웹소켓 연결 및 차트 Append
-  useWebSocket(activeSymbolsRef.current, chartDataRefs, lastUpdateTimesRef);
-
-  // 3. WS 타임아웃 30초 초과 시 폴백 REST Polling
-  useFallback(activeSymbolsRef.current, chartDataRefs, lastUpdateTimesRef);
+  // 2. 실시간 동기화(KIS 웹소켓 / Toss 폴링)
+  useRealtimeSync(activeSymbolsRef.current, chartDataRefs, lastUpdateTimesRef);
 
   // 화면을 렌더링하지 않는 유령 컴포넌트
   return null;

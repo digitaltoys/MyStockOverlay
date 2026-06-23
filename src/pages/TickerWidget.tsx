@@ -6,13 +6,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { X } from "lucide-react";
 import TickerCard from "../components/TickerCard";
-import {
-  fetchCurrentPriceUnified,
-  fetchIntradayChart
-} from "../lib/kisApi";
-import * as kisVirtualApi from "../lib/kisVirtualApi";
 import { Config } from "../lib/storage";
 import { StockData } from "../lib/types";
+import { createMarketDataProvider } from "../lib/providers";
+import { isIndexSymbol } from "../lib/market";
 
 export default function TickerWidget() {
   const { symbol } = useParams<{ symbol: string }>();
@@ -105,26 +102,25 @@ export default function TickerWidget() {
     const loadInitialData = async () => {
       try {
         const config = Config.get();
-        const { appKey, appSecret } = Config.getActiveKeys();
-        if (!appKey || !appSecret) return;
+        const provider = createMarketDataProvider(config);
 
-        const fetchPrice = config.isVirtual ? kisVirtualApi.fetchVirtualCurrentPriceUnified : fetchCurrentPriceUnified;
-        const fetchChart = config.isVirtual ? kisVirtualApi.fetchVirtualIntradayChart : fetchIntradayChart;
+        if (provider.mode === "toss" && symbol && isIndexSymbol(symbol)) {
+          setError("토스는 지수 종목을 지원하지 않습니다.");
+          return;
+        }
 
-        if (config.kisEnabled) {
-          // KIS 활성화 시 KIS에서 로드
-          const priceData = await fetchPrice(appKey, appSecret, symbol);
+        const priceData = await provider.fetchPrice(symbol);
           setTickerData(prev => ({
             ...(prev || {}),
             ...priceData,
-            dataSource: 'KIS',
+            dataSource: priceData.dataSource,
             updatedAt: Date.now(),
           } as StockData));
 
           // 잠시 후 차트 로드 (TPS 제한 방지)
           setTimeout(async () => {
             try {
-              const chartData = await fetchChart(appKey, appSecret, symbol);
+              const chartData = await provider.fetchChart(symbol);
               if (chartData.length > 0) {
                 setTickerData(prev => prev ? { ...prev, intradayPrices: chartData } : prev);
               }
@@ -132,20 +128,15 @@ export default function TickerWidget() {
               console.error("Chart load failed:", chartErr);
             }
           }, 800);
-        } else if (config.apis.yahoo.enabled) {
-          // KIS는 꺼져있고 Yahoo만 켜져있는 경우
-          const { fetchFallbackData } = await import("../lib/fallbackApi");
-          const fbData = await fetchFallbackData(symbol);
-          setTickerData(fbData);
-        }
-
+          return;
       } catch (err: any) {
         console.error("Initial load failed:", err);
+        setError(err?.message ?? "초기 데이터 로드 실패");
       }
     };
 
     const setupListeners = async () => {
-      const unlistenData = await listen<StockData>(`kis-ticker-data-${symbol}`, (event) => {
+    const unlistenData = await listen<StockData>(`kis-ticker-data-${symbol}`, (event) => {
         setError(null);
         // 이벤트 수신 시 기존 데이터와 병합: intradayPrices만 있으면 현재가 유지
         setTickerData(prev => {

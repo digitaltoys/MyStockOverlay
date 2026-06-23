@@ -7,7 +7,7 @@ import {
   Pencil, Check, X, RefreshCw
 } from "lucide-react";
 import WsManager from "../components/WsManager";
-import { Config, KisAuthStorage, MyStock, StockPurchase } from "../lib/storage";
+import { Config, DataSourceMode, KisAuthStorage, MyStock, StockPurchase, TossAuthStorage } from "../lib/storage";
 
 // ─── 내 주식 관리 패널 ──────────────────────────────────────────────
 
@@ -233,12 +233,13 @@ export default function ControlPanel() {
   const [realAppSecret, setRealAppSecret] = useState("");
   const [virtualAppKey, setVirtualAppKey] = useState("");
   const [virtualAppSecret, setVirtualAppSecret] = useState("");
+  const [tossClientId, setTossClientId] = useState("");
+  const [tossClientSecret, setTossClientSecret] = useState("");
+  const [tossPollingIntervalSec, setTossPollingIntervalSec] = useState(10);
   const [isLocked, setIsLocked] = useState(true);
   const [hideBorder, setHideBorder] = useState(false);
   const [scale, setScale] = useState(1.0);
-  const [enableKis, setEnableKis] = useState(true);
-  const [enableFallback, setEnableFallback] = useState(true);
-  const [isVirtual, setIsVirtual] = useState(false);
+  const [dataSourceMode, setDataSourceMode] = useState<DataSourceMode>("real");
 
   // 종목 목록
   const [tickerSymbols, setTickerSymbols] = useState<string[]>([]);
@@ -279,12 +280,13 @@ export default function ControlPanel() {
     setRealAppSecret(config.apis.kis.appSecret);
     setVirtualAppKey(config.apis.kisVirtual.appKey);
     setVirtualAppSecret(config.apis.kisVirtual.appSecret);
+    setTossClientId(config.apis.toss.clientId);
+    setTossClientSecret(config.apis.toss.clientSecret);
+    setTossPollingIntervalSec(config.tossPollingIntervalSec);
     if (config.symbols.length) setTickerSymbols(config.symbols);
     setHideBorder(config.hideBorder);
     setScale(config.scale || 1.0);
-    setEnableKis(config.kisEnabled);
-    setEnableFallback(config.apis.yahoo.enabled);
-    setIsVirtual(config.isVirtual);
+    setDataSourceMode(config.dataSourceMode);
     setMyStocks(config.myStocks || []);
 
     const initialLockState = config.isLocked;
@@ -349,19 +351,47 @@ export default function ControlPanel() {
     alert("모의투자 인증 정보가 저장되었습니다.");
   };
 
+  const saveTossConfig = () => {
+    const config = Config.get();
+    Config.set({
+      apis: {
+        ...config.apis,
+        toss: {
+          clientId: tossClientId,
+          clientSecret: tossClientSecret,
+        },
+      },
+    });
+    TossAuthStorage.clear();
+    alert("토스 Open API 인증 정보가 저장되었습니다.");
+  };
+
+  const selectDataSourceMode = (mode: DataSourceMode) => {
+    setDataSourceMode(mode);
+    Config.setDataSourceMode(mode);
+
+    if (mode === "real") {
+      KisAuthStorage.clear(false);
+      return;
+    }
+
+    if (mode === "virtual") {
+      KisAuthStorage.clear(true);
+      return;
+    }
+
+    if (mode === "toss") {
+      TossAuthStorage.clear();
+      return;
+    }
+
+    KisAuthStorage.clear();
+  };
+
   const clearAuthTokens = () => {
     if (confirm("웹소켓 및 API 연결 인증 정보를 초기화하시겠습니까?\n강제로 새로운 세션과 접속 키를 발급받습니다.")) {
       KisAuthStorage.clear(); // 전체 환경(모의, 실전) 캐시 지움 (인자 없이 호출 시 전체 삭제하도록 storage에 되어있음)
-      const isEnabled = Config.get().kisEnabled;
-      // WsManager 재작동 유도
-      if (isEnabled) {
-        setEnableKis(false);
-        Config.set({ kisEnabled: false });
-        setTimeout(() => {
-          setEnableKis(true);
-          Config.set({ kisEnabled: true });
-        }, 300);
-      }
+      TossAuthStorage.clear();
       alert("인증 정보가 초기화되어 재연결을 시도합니다.");
     }
   };
@@ -716,44 +746,12 @@ export default function ControlPanel() {
               </div>
             </section>
 
-            {/* KIS API */}
+            {/* 데이터 소스 선택 */}
             <div className="grid gap-4">
               <div className="flex items-center justify-between px-1">
                 <div className="flex items-center gap-2 text-zinc-400">
-                  <Shield size={16} className={`${enableKis ? 'text-blue-400' : ''}`} />
-                  <span className="text-base font-bold tracking-tight">한국투자증권 KIS API</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className={`text-[10px] font-bold uppercase tracking-wider ${enableKis ? 'text-blue-400' : 'text-zinc-600'}`}>
-                    {enableKis ? 'Active' : 'Disabled'}
-                  </span>
-                  <input
-                    type="checkbox"
-                    checked={enableKis}
-                    onChange={(e) => { setEnableKis(e.target.checked); Config.set({ kisEnabled: e.target.checked }); }}
-                    className="sr-only"
-                    id="kis-toggle"
-                  />
-                  <label
-                    htmlFor="kis-toggle"
-                    className={`w-9 h-5 rounded-full p-0.5 transition-colors cursor-pointer ${enableKis ? 'bg-blue-500' : 'bg-zinc-700'}`}
-                  >
-                    <div className={`w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${enableKis ? 'translate-x-4' : 'translate-x-0'}`} />
-                  </label>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between px-1">
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => { setIsVirtual(true); Config.set({ isVirtual: true }); KisAuthStorage.clear(true); }}
-                    className={`text-[10px] font-black px-3 py-1 rounded-lg transition-all ${isVirtual ? 'bg-purple-500 text-white shadow-purple-500/20 shadow-lg' : 'bg-zinc-800 text-zinc-500'}`}
-                  >🧪 VIRTUAL (모의)</button>
-                  <button
-                    onClick={() => { setIsVirtual(false); Config.set({ isVirtual: false }); KisAuthStorage.clear(false); }}
-                    className={`text-[10px] font-black px-3 py-1 rounded-lg transition-all ${!isVirtual ? 'bg-blue-500 text-white shadow-blue-500/20 shadow-lg' : 'bg-zinc-800 text-zinc-500'}`}
-                  >💼 REAL (실계좌)</button>
-                  <span className="text-[10px] text-zinc-600 font-medium ml-1">현재: {isVirtual ? '모의투자' : '실계좌'} 모드로 동작 중</span>
+                  <Shield size={16} className="text-blue-400" />
+                  <span className="text-base font-bold tracking-tight">데이터 소스</span>
                 </div>
                 <button
                   onClick={clearAuthTokens}
@@ -765,89 +763,172 @@ export default function ControlPanel() {
                 </button>
               </div>
 
-              {/* 실계좌 Key */}
-              <section className={`bg-zinc-900/40 rounded-2xl border transition-all duration-300 ${!isVirtual ? 'border-blue-500/50 shadow-blue-500/5 shadow-lg' : 'border-white/5'} p-5 backdrop-blur-xl`}>
-                <div className="flex items-center gap-2 mb-4">
-                  <div className={`w-2 h-2 rounded-full ${!isVirtual ? 'bg-blue-400 animate-pulse' : 'bg-zinc-700'}`} />
-                  <span className="text-sm font-black tracking-tight text-zinc-300">💼 실계좌 (Real)</span>
-                  {!isVirtual && <span className="text-[9px] font-black bg-blue-500 text-white px-1.5 py-0.5 rounded ml-auto">사용 중</span>}
-                </div>
-                <div className="grid gap-3">
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">App Key</label>
-                    <input value={realAppKey} onChange={(e) => setRealAppKey(e.target.value)} placeholder="실계좌 App Key" disabled={!enableKis}
-                      className="w-full bg-black/50 border border-white/5 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all font-mono text-xs disabled:opacity-50" />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">App Secret</label>
-                    <input type="password" value={realAppSecret} onChange={(e) => setRealAppSecret(e.target.value)} placeholder="실계좌 App Secret" disabled={!enableKis}
-                      className="w-full bg-black/50 border border-white/5 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all font-mono text-xs text-zinc-400 disabled:opacity-50" />
-                  </div>
-                  <button onClick={saveRealConfig} disabled={!enableKis}
-                    className="mt-1 font-black py-2.5 rounded-xl active:scale-[0.98] transition-all text-xs uppercase disabled:opacity-50 bg-blue-500 text-white hover:bg-blue-400">
-                    실계좌 키 저장
+              <div className="grid gap-3 px-1">
+                <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                  <button
+                    onClick={() => selectDataSourceMode("real")}
+                    className={`text-[10px] font-black px-3 py-2 rounded-lg transition-all border ${dataSourceMode === 'real' ? 'bg-blue-500 text-white border-blue-400 shadow-blue-500/20 shadow-lg' : 'bg-zinc-800 text-zinc-500 border-white/5 hover:bg-zinc-700'}`}
+                  >
+                    💼 실계좌
+                  </button>
+                  <button
+                    onClick={() => selectDataSourceMode("virtual")}
+                    className={`text-[10px] font-black px-3 py-2 rounded-lg transition-all border ${dataSourceMode === 'virtual' ? 'bg-purple-500 text-white border-purple-400 shadow-purple-500/20 shadow-lg' : 'bg-zinc-800 text-zinc-500 border-white/5 hover:bg-zinc-700'}`}
+                  >
+                    🧪 모의투자
+                  </button>
+                  <button
+                    onClick={() => selectDataSourceMode("yahoo")}
+                    className={`text-[10px] font-black px-3 py-2 rounded-lg transition-all border ${dataSourceMode === 'yahoo' ? 'bg-yellow-500 text-white border-yellow-400 shadow-yellow-500/20 shadow-lg' : 'bg-zinc-800 text-zinc-500 border-white/5 hover:bg-zinc-700'}`}
+                  >
+                    🌐 Yahoo
+                  </button>
+                  <button
+                    onClick={() => selectDataSourceMode("toss")}
+                    className={`text-[10px] font-black px-3 py-2 rounded-lg transition-all border ${dataSourceMode === 'toss' ? 'bg-cyan-500 text-white border-cyan-400 shadow-cyan-500/20 shadow-lg' : 'bg-zinc-800 text-zinc-500 border-white/5 hover:bg-zinc-700'}`}
+                  >
+                    🧾 토스
                   </button>
                 </div>
-              </section>
+                <p className="text-[10px] text-zinc-600 font-medium">
+                  현재 선택: {dataSourceMode === 'real' ? '실계좌' : dataSourceMode === 'virtual' ? '모의투자' : dataSourceMode === 'yahoo' ? 'Yahoo' : '토스'}
+                </p>
+              </div>
 
-              {/* 모의투자 Key */}
-              <section className={`bg-zinc-900/40 rounded-2xl border transition-all duration-300 ${isVirtual ? 'border-purple-500/50 shadow-purple-500/5 shadow-lg' : 'border-white/5'} p-5 backdrop-blur-xl`}>
-                <div className="flex items-center gap-2 mb-4">
-                  <div className={`w-2 h-2 rounded-full ${isVirtual ? 'bg-purple-400 animate-pulse' : 'bg-zinc-700'}`} />
-                  <span className="text-sm font-black tracking-tight text-zinc-300">🧪 모의투자 (Virtual)</span>
-                  {isVirtual && <span className="text-[9px] font-black bg-purple-500 text-white px-1.5 py-0.5 rounded ml-auto">사용 중</span>}
-                </div>
-                <div className="grid gap-3">
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">App Key</label>
-                    <input value={virtualAppKey} onChange={(e) => setVirtualAppKey(e.target.value)} placeholder="모의투자 App Key" disabled={!enableKis}
-                      className="w-full bg-black/50 border border-white/5 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-purple-500/20 transition-all font-mono text-xs disabled:opacity-50" />
+              {dataSourceMode === "real" && (
+                <section className="bg-zinc-900/40 rounded-2xl border border-blue-500/50 shadow-blue-500/5 shadow-lg p-5 backdrop-blur-xl transition-all duration-300">
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+                    <span className="text-sm font-black tracking-tight text-zinc-300">💼 실계좌 (Real)</span>
+                    <span className="text-[9px] font-black bg-blue-500 text-white px-1.5 py-0.5 rounded ml-auto">사용 중</span>
                   </div>
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">App Secret</label>
-                    <input type="password" value={virtualAppSecret} onChange={(e) => setVirtualAppSecret(e.target.value)} placeholder="모의투자 App Secret" disabled={!enableKis}
-                      className="w-full bg-black/50 border border-white/5 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-purple-500/20 transition-all font-mono text-xs text-zinc-400 disabled:opacity-50" />
-                  </div>
-                  <button onClick={saveVirtualConfig} disabled={!enableKis}
-                    className="mt-1 font-black py-2.5 rounded-xl active:scale-[0.98] transition-all text-xs uppercase disabled:opacity-50 bg-purple-500 text-white hover:bg-purple-400">
-                    모의투자 키 저장
-                  </button>
-                </div>
-              </section>
-
-              {/* Yahoo Finance Fallback */}
-              <section className={`bg-zinc-900/40 rounded-2xl border transition-all duration-300 ${enableFallback ? 'border-yellow-500/30' : 'border-white/5 opacity-60'} p-5 backdrop-blur-xl shadow-inner`}>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-zinc-400">
-                    <ExternalLink size={16} className={`${enableFallback ? 'text-yellow-500' : ''}`} />
-                    <div className="flex flex-col">
-                      <h2 className="text-base font-bold tracking-tight leading-none">Yahoo Finance API</h2>
-                      <p className="text-[10px] text-zinc-500 font-medium mt-1">KIS 장애 시 비상 데이터 소스 (15~20분 지연)</p>
+                  <div className="grid gap-3">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">App Key</label>
+                      <input value={realAppKey} onChange={(e) => setRealAppKey(e.target.value)} placeholder="실계좌 App Key"
+                        className="w-full bg-black/50 border border-white/5 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all font-mono text-xs" />
                     </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">App Secret</label>
+                      <input type="password" value={realAppSecret} onChange={(e) => setRealAppSecret(e.target.value)} placeholder="실계좌 App Secret"
+                        className="w-full bg-black/50 border border-white/5 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all font-mono text-xs text-zinc-400" />
+                    </div>
+                    <button onClick={saveRealConfig}
+                      className="mt-1 font-black py-2.5 rounded-xl active:scale-[0.98] transition-all text-xs uppercase bg-blue-500 text-white hover:bg-blue-400">
+                      실계좌 키 저장
+                    </button>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className={`text-[10px] font-bold uppercase tracking-wider ${enableFallback ? 'text-yellow-500' : 'text-zinc-600'}`}>
-                      {enableFallback ? 'Active' : 'Disabled'}
-                    </span>
-                    <input
-                      type="checkbox"
-                      checked={enableFallback}
-                      onChange={(e) => {
-                        const val = e.target.checked;
-                        setEnableFallback(val);
-                        const config = Config.get();
-                        Config.set({ apis: { ...config.apis, yahoo: { ...config.apis.yahoo, enabled: val } } });
-                      }}
-                      className="sr-only"
-                      id="fallback-toggle"
-                    />
-                    <label htmlFor="fallback-toggle"
-                      className={`w-9 h-5 rounded-full p-0.5 transition-colors cursor-pointer ${enableFallback ? 'bg-yellow-500' : 'bg-zinc-700'}`}>
-                      <div className={`w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${enableFallback ? 'translate-x-4' : 'translate-x-0'}`} />
-                    </label>
+                </section>
+              )}
+
+              {dataSourceMode === "virtual" && (
+                <section className="bg-zinc-900/40 rounded-2xl border border-purple-500/50 shadow-purple-500/5 shadow-lg p-5 backdrop-blur-xl transition-all duration-300">
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
+                    <span className="text-sm font-black tracking-tight text-zinc-300">🧪 모의투자 (Virtual)</span>
+                    <span className="text-[9px] font-black bg-purple-500 text-white px-1.5 py-0.5 rounded ml-auto">사용 중</span>
                   </div>
-                </div>
-              </section>
+                  <div className="grid gap-3">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">App Key</label>
+                      <input value={virtualAppKey} onChange={(e) => setVirtualAppKey(e.target.value)} placeholder="모의투자 App Key"
+                        className="w-full bg-black/50 border border-white/5 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-purple-500/20 transition-all font-mono text-xs" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">App Secret</label>
+                      <input type="password" value={virtualAppSecret} onChange={(e) => setVirtualAppSecret(e.target.value)} placeholder="모의투자 App Secret"
+                        className="w-full bg-black/50 border border-white/5 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-purple-500/20 transition-all font-mono text-xs text-zinc-400" />
+                    </div>
+                    <button onClick={saveVirtualConfig}
+                      className="mt-1 font-black py-2.5 rounded-xl active:scale-[0.98] transition-all text-xs uppercase bg-purple-500 text-white hover:bg-purple-400">
+                      모의투자 키 저장
+                    </button>
+                  </div>
+                </section>
+              )}
+
+              {dataSourceMode === "yahoo" && (
+                <section className="bg-zinc-900/40 rounded-2xl border border-yellow-500/30 p-5 backdrop-blur-xl shadow-inner transition-all duration-300">
+                  <div className="flex items-center gap-2 mb-4">
+                    <ExternalLink size={16} className="text-yellow-500" />
+                    <span className="text-sm font-black tracking-tight text-zinc-300">🌐 Yahoo Finance</span>
+                    <span className="text-[9px] font-black bg-yellow-500 text-white px-1.5 py-0.5 rounded ml-auto">사용 중</span>
+                  </div>
+                  <p className="text-sm text-zinc-400 leading-relaxed">
+                    Yahoo Finance를 현재 데이터 소스로 사용합니다.
+                    별도의 App Key나 App Secret은 필요하지 않습니다.
+                  </p>
+                </section>
+              )}
+
+              {dataSourceMode === "toss" && (
+                <section className="bg-zinc-900/40 rounded-2xl border border-cyan-500/30 p-5 backdrop-blur-xl shadow-inner transition-all duration-300">
+                  <div className="flex items-center gap-2 mb-4">
+                    <ExternalLink size={16} className="text-cyan-400" />
+                    <span className="text-sm font-black tracking-tight text-zinc-300">🧾 토스 증권</span>
+                    <span className="text-[9px] font-black bg-cyan-500 text-white px-1.5 py-0.5 rounded ml-auto">사용 중</span>
+                  </div>
+                  <div className="grid gap-3">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">Client ID</label>
+                      <input
+                        value={tossClientId}
+                        onChange={(e) => setTossClientId(e.target.value)}
+                        placeholder="토스 Client ID"
+                        className="w-full bg-black/50 border border-white/5 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-mono text-xs"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest ml-1">Client Secret</label>
+                      <input
+                        type="password"
+                        value={tossClientSecret}
+                        onChange={(e) => setTossClientSecret(e.target.value)}
+                        placeholder="토스 Client Secret"
+                        className="w-full bg-black/50 border border-white/5 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 transition-all font-mono text-xs text-zinc-400"
+                      />
+                    </div>
+                    <button
+                      onClick={saveTossConfig}
+                      className="mt-1 font-black py-2.5 rounded-xl active:scale-[0.98] transition-all text-xs uppercase bg-cyan-500 text-white hover:bg-cyan-400"
+                    >
+                      토스 키 저장
+                    </button>
+                    <div className="mt-1 p-3 rounded-xl bg-white/5 border border-white/5">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex flex-col">
+                          <span className="text-sm font-bold tracking-tight text-white">폴링 간격</span>
+                          <span className="text-[10px] text-zinc-500 font-medium mt-0.5">토스 실시간 갱신 주기</span>
+                        </div>
+                        <span className="text-sm font-mono font-bold text-cyan-300 bg-cyan-400/10 px-2 py-0.5 rounded-md">
+                          {tossPollingIntervalSec}초
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min="3"
+                        max="60"
+                        step="1"
+                        value={tossPollingIntervalSec}
+                        onChange={(e) => {
+                          const next = parseInt(e.target.value, 10);
+                          setTossPollingIntervalSec(next);
+                          Config.setTossPollingIntervalSec(next);
+                        }}
+                        className="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+                      />
+                      <div className="flex justify-between mt-1 px-1">
+                        <span className="text-[9px] text-zinc-600">3초</span>
+                        <span className="text-[9px] text-zinc-600">30초</span>
+                        <span className="text-[9px] text-zinc-600">60초</span>
+                      </div>
+                    </div>
+                    <p className="text-xs text-zinc-400 leading-relaxed">
+                      현재가와 분봉 차트를 직접 호출합니다. 웹소켓은 사용하지 않습니다.
+                    </p>
+                  </div>
+                </section>
+              )}
             </div>
           </div>
         )}

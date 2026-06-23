@@ -29,6 +29,10 @@ MyStockOverlay는 무거운 백엔드 대신 클라이언트가 직접 증권사
 
 ## 📚 문서 파일 색인
 - **[README.md](./README.md)**: 프로젝트 개요, 구조도, 실행 및 빌드 방법 안내
+- **[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)**: 코드 기준 시스템 구조, 데이터 흐름, Tauri 이벤트/명령 정리
+- **[docs/FRONTEND_ARCHITECTURE.md](./docs/FRONTEND_ARCHITECTURE.md)**: 화면 구조, 훅, 저장소, 컴포넌트 정리
+- **[docs/DATA_ARCHITECTURE.md](./docs/DATA_ARCHITECTURE.md)**: KIS, Yahoo, Tauri 브리지, 토스 OpenAPI 참고 정리
+- **[docs/PROVIDER_DESIGN.md](./docs/PROVIDER_DESIGN.md)**: 시세 provider 인터페이스, 모드 전환, 폴백 규칙 정리
 - **[TASK.md](./TASK.md)**: 모듈 단위 작업 내역(완료/예정 목록) 관리
 - **[DEVNOTES.md](./DEVNOTES.md)**: 개발 중 발생한 핵심 오류 및 트러블슈팅 노하우 기록
 

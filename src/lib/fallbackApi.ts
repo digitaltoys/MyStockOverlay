@@ -51,12 +51,13 @@ export async function fetchFallbackData(symbol: string): Promise<StockData> {
 
     const resultData: StockData = {
       symbol,
+      displayName: meta.shortName ?? meta.longName ?? symbol,
       currentPrice: priceNum,
       changeRate: changeRate.toFixed(2),
       isUp: priceNum > prevCloseNum,
       isDown: priceNum < prevCloseNum,
       basePrice: prevCloseNum,
-      dataSource: 'Fallback',
+      dataSource: 'Yahoo',
       updatedAt: Date.now(),
       intradayPrices: intradayPrices.length > 0 ? intradayPrices : undefined
     };

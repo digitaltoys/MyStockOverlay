@@ -8,6 +8,9 @@
     "allow": [
       {
         "url": "https://openapi.koreainvestment.com:9443/*"
+      },
+      {
+        "url": "https://openapi.tossinvest.com/*"
       }
     ]
   }

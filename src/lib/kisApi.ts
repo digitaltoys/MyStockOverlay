@@ -51,6 +51,7 @@ export const symbolTypeCache = new Map<string, string>();
 
 export interface KisTickerData {
   symbol: string;
+  displayName?: string;
   currentPrice: number | string;
   changeRate: number | string;
   isUp: boolean;
@@ -220,6 +221,9 @@ export async function fetchCurrentPrice(appKey: string, appSecret: string, symbo
 
   return {
     symbol,
+    displayName: isIndex
+      ? output.bstp_nmix_kor_isnm ?? output.hts_kor_isnm ?? symbol
+      : output.hts_kor_isnm ?? output.pdno ?? output.stck_shrn_iscd ?? symbol,
     currentPrice,
     changeRate,
     isUp: sign === '1' || sign === '2',
@@ -286,6 +290,7 @@ export async function fetchCurrentPriceNxt(appKey: string, appSecret: string, sy
 
   return {
     symbol,
+    displayName: output.hts_kor_isnm ?? output.pdno ?? output.stck_shrn_iscd ?? symbol,
     currentPrice,
     changeRate,
     isUp: sign === '1' || sign === '2',
@@ -382,6 +387,7 @@ export function parseTickerData(symbol: string, rawData: string, trId: string = 
 
   return {
     symbol,
+    displayName: symbol,
     currentPrice,
     changeRate,
     isUp: diffSign === '1' || diffSign === '2',

@@ -8,7 +8,7 @@ interface TickerCardProps {
 }
 
 export default function TickerCard({ data, isLocked = true }: TickerCardProps) {
-  const { symbol, currentPrice, changeRate, isUp, isDown, dataSource, intradayPrices } = data;
+  const { symbol, displayName, currentPrice, changeRate, isUp, isDown, dataSource, intradayPrices } = data;
 
   const colorClass = isUp
     ? "text-red-400"
@@ -29,18 +29,19 @@ export default function TickerCard({ data, isLocked = true }: TickerCardProps) {
           </span>
           <div className="flex items-center gap-1 mt-0.5">
             <span className="text-sm font-black text-white leading-tight tracking-tight drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] truncate max-w-[100px]">
-              {symbol === "005930" ? "삼성전자"
-                : symbol === "122630" ? "KODEX 레버리지"
-                  : symbol === "0001" ? "코스피"
-                    : symbol === "1001" ? "코스닥"
-                      : symbol === "2001" ? "KOSPI 200"
-                        : symbol}
+              {displayName ?? symbol}
             </span>
-            {dataSource === 'Fallback' && (
-              <span className="text-[8px] px-1 bg-zinc-700 text-zinc-400 rounded-sm border border-white/5 leading-none h-2.5 flex items-center mt-0.5">
-                FB
-              </span>
-            )}
+      {dataSource !== 'KIS' && (
+        <span
+          className={`text-[8px] px-1 rounded-sm border leading-none h-2.5 flex items-center mt-0.5 ${
+            dataSource === 'Yahoo'
+              ? "bg-yellow-500/10 text-yellow-300 border-yellow-500/20"
+              : "bg-cyan-500/10 text-cyan-300 border-cyan-500/20"
+          }`}
+        >
+          {dataSource === 'Yahoo' ? 'YH' : 'TS'}
+        </span>
+      )}
           </div>
         </div>
       </div>

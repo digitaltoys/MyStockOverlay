@@ -16,6 +16,9 @@
         },
         {
           "url": "https://query1.finance.yahoo.com/*"
+        },
+        {
+          "url": "https://openapi.tossinvest.com/*"
         }
       ]
     },
@@ -27,6 +30,9 @@
         },
         {
           "url": "https://query1.finance.yahoo.com/*"
+        },
+        {
+          "url": "https://openapi.tossinvest.com/*"
         }
       ]
     },
@@ -38,6 +44,9 @@
         },
         {
           "url": "https://query1.finance.yahoo.com/*"
+        },
+        {
+          "url": "https://openapi.tossinvest.com/*"
         }
       ]
     },

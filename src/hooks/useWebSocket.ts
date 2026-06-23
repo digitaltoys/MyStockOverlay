@@ -9,6 +9,7 @@ import {
   isIndexSymbol
 } from "../lib/kisApi";
 import { getKisVirtualWsApprovalKey } from "../lib/kisVirtualApi";
+import { appendRealtimeChartPoint, broadcastTickerData, makeCurrentChartPoint } from "./realtimeUtils";
 
 const KIS_WS_URL_REAL = "ws://ops.koreainvestment.com:21000";
 const KIS_WS_URL_VIRTUAL = "ws://ops.koreainvestment.com:31000";
@@ -19,7 +20,8 @@ const KIS_WS_URL_VIRTUAL = "ws://ops.koreainvestment.com:31000";
 export function useWebSocket(
   activeSymbols: Set<string>,
   chartDataRefs: React.MutableRefObject<Map<string, any[]>>,
-  lastUpdateTimesRef: React.MutableRefObject<Map<string, number>>
+  lastUpdateTimesRef: React.MutableRefObject<Map<string, number>>,
+  enabled: boolean = true,
 ) {
   const wsRef = useRef<WebSocket | null>(null);
   const approvalKeyRef = useRef<string | null>(null);
@@ -34,15 +36,17 @@ export function useWebSocket(
     try {
       const config = Config.get();
       const { appKey, appSecret } = Config.getActiveKeys();
+      const isKisMode = config.dataSourceMode === "real" || config.dataSourceMode === "virtual";
+      const isVirtual = config.dataSourceMode === "virtual";
 
-      if (!config.kisEnabled || !appKey || !appSecret) {
+      if (!isKisMode || !appKey || !appSecret) {
         isConnectingRef.current = false;
         return;
       }
 
       if (!approvalKeyRef.current) {
         try {
-          approvalKeyRef.current = config.isVirtual
+          approvalKeyRef.current = isVirtual
             ? await getKisVirtualWsApprovalKey(appKey, appSecret)
             : await getKisWsApprovalKey(appKey, appSecret);
         } catch (e) {
@@ -52,7 +56,7 @@ export function useWebSocket(
         }
       }
 
-      const wsUrl = config.isVirtual ? KIS_WS_URL_VIRTUAL : KIS_WS_URL_REAL;
+      const wsUrl = isVirtual ? KIS_WS_URL_VIRTUAL : KIS_WS_URL_REAL;
       const socket = new WebSocket(wsUrl);
 
       socket.onopen = () => {
@@ -89,35 +93,13 @@ export function useWebSocket(
 
                 // ==== 차트 Append 로직 ====
                 const sessionChart = chartDataRefs.current.get(parsedSymbol) || [];
-                const now = new Date();
-                const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-                const hourStr = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
-                const newPoint = { price: Number(unifiedData.currentPrice), date: dateStr, hour: hourStr };
-
-                let newChart = [...sessionChart];
-                if (newChart.length > 0) {
-                  const lastPoint = newChart[newChart.length - 1];
-                  if (typeof lastPoint === 'object' && lastPoint.date && lastPoint.hour) {
-                    const lastGroup = lastPoint.date + lastPoint.hour.substring(0, 3);
-                    const currentGroup = newPoint.date + newPoint.hour.substring(0, 3);
-                    if (lastGroup === currentGroup) {
-                      newChart[newChart.length - 1] = newPoint; // 같은 10분 구간 갱신
-                    } else {
-                      newChart.push(newPoint); // 10분 구간 넘어가면 추가
-                    }
-                  } else {
-                    newChart.push(newPoint); // 옛날 숫자 데이터 포맷 폴백
-                  }
-                } else {
-                  newChart.push(newPoint); // 차트 비었을 때 최초 1개
-                }
-
-                if (newChart.length > 400) newChart = newChart.slice(-400); // 400개 유지
+                const newPoint = makeCurrentChartPoint(Number(unifiedData.currentPrice));
+                const newChart = appendRealtimeChartPoint(sessionChart, newPoint);
                 
                 chartDataRefs.current.set(parsedSymbol, newChart);
                 unifiedData.intradayPrices = newChart;
 
-                invoke("broadcast_ticker_data", { symbol: parsedSymbol, data: unifiedData }).catch(e => {
+                broadcastTickerData(parsedSymbol, unifiedData).catch(e => {
                   console.error(`[useWebSocket] Broadcast Ticker Failed for ${parsedSymbol}:`, e);
                 });
               }
@@ -170,14 +152,20 @@ export function useWebSocket(
 
   // 구독 관리 useEffect (주기적으로 체크)
   useEffect(() => {
+    if (!enabled) {
+      if (wsRef.current) wsRef.current.close();
+      return;
+    }
+
     let checkInterval: ReturnType<typeof setInterval>;
 
     const syncSubscriptions = () => {
       const config = Config.get();
       const { appKey, appSecret } = Config.getActiveKeys();
+      const isKisMode = config.dataSourceMode === "real" || config.dataSourceMode === "virtual";
 
       // [설정 변경 감지 및 동기화]
-      const currentConfigSignature = `${config.isVirtual}-${appKey}-${appSecret}-${config.kisEnabled}`;
+      const currentConfigSignature = `${config.dataSourceMode}-${appKey}-${appSecret}`;
       const lastSignature = (syncSubscriptions as any).lastSignature;
 
       if (lastSignature && lastSignature !== currentConfigSignature) {
@@ -187,8 +175,7 @@ export function useWebSocket(
       }
       (syncSubscriptions as any).lastSignature = currentConfigSignature;
 
-      if (config.kisEnabled && wsRef.current && wsRef.current.readyState === WebSocket.OPEN && approvalKeyRef.current) {
-        
+      if (isKisMode && wsRef.current && wsRef.current.readyState === WebSocket.OPEN && approvalKeyRef.current) {
         // 추가된 심볼 구독
         for (const symbol of activeSymbols) {
           if (!subscribedRefs.current.has(symbol)) {
@@ -225,9 +212,9 @@ export function useWebSocket(
           }
         }
       } else {
-        if (config.kisEnabled && activeSymbols.size > 0 && !isConnectingRef.current && !wsRef.current) {
+        if (isKisMode && activeSymbols.size > 0 && !isConnectingRef.current && !wsRef.current) {
           connectWs();
-        } else if ((!config.kisEnabled || activeSymbols.size === 0) && wsRef.current) {
+        } else if ((!isKisMode || activeSymbols.size === 0) && wsRef.current) {
           wsRef.current.close();
         }
       }
@@ -239,6 +226,6 @@ export function useWebSocket(
       clearInterval(checkInterval);
       if (wsRef.current) wsRef.current.close();
     };
-  }, [activeSymbols]);
+  }, [activeSymbols, enabled]);
 
 }

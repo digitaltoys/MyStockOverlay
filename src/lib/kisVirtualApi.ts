@@ -150,6 +150,9 @@ export async function fetchVirtualCurrentPrice(appKey: string, appSecret: string
 
   return {
     symbol,
+    displayName: isIndex
+      ? output.bstp_nmix_kor_isnm ?? output.hts_kor_isnm ?? symbol
+      : output.hts_kor_isnm ?? output.pdno ?? output.stck_shrn_iscd ?? symbol,
     currentPrice,
     changeRate,
     isUp: sign === '1' || sign === '2',

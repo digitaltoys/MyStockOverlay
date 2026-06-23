@@ -26,6 +26,8 @@ export interface MyStock {
   purchases: StockPurchase[];  // 매입 이력
 }
 
+export type DataSourceMode = "real" | "virtual" | "yahoo" | "toss";
+
 export interface ApisConfig {
   kis: {
     appKey: string;
@@ -35,15 +37,16 @@ export interface ApisConfig {
     appKey: string;
     appSecret: string;
   };
-  yahoo: {
-    enabled: boolean;
+  toss: {
+    clientId: string;
+    clientSecret: string;
   };
 }
 
 export interface AppConfig {
   apis: ApisConfig;
-  isVirtual: boolean;   // KIS의 실계좌/모의투자 모드 결정
-  kisEnabled: boolean;  // KIS API 사용 여부 (REST/WS 공통)
+  dataSourceMode: DataSourceMode;
+  tossPollingIntervalSec: number;
   hideBorder: boolean;
   isLocked: boolean;
   symbols: string[];
@@ -58,16 +61,21 @@ export interface KisAuth {
   tokenTime: number; // Date.now()
 }
 
+export interface TossAuth {
+  accessToken: string;
+  tokenTime: number; // Date.now()
+}
+
 // ─── 기본값 ────────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG: AppConfig = {
   apis: {
     kis: { appKey: "", appSecret: "" },
     kisVirtual: { appKey: "", appSecret: "" },
-    yahoo: { enabled: true },
+    toss: { clientId: "", clientSecret: "" },
   },
-  isVirtual: true,
-  kisEnabled: true,
+  dataSourceMode: "real",
+  tossPollingIntervalSec: 10,
   hideBorder: false,
   isLocked: true,
   symbols: [],
@@ -94,18 +102,22 @@ export function loadConfig(): AppConfig {
     // 마이그레이션 로직: apis 키가 없으면 이전 버전들(Flat 또는 V1)임
     if (!parsed.apis) {
       console.log("[Storage] Migrating old config (Flat or V1) to apis subkey structure (V2)...");
+      const legacyWantedYahoo = parsed.fallback?.enabled ?? parsed.enableFallback ?? false;
+      const legacyWantedVirtual = parsed.kis?.isVirtual ?? parsed.isVirtual ?? false;
+      const legacyMode: DataSourceMode =
+        parsed.dataSourceMode ??
+        (legacyWantedYahoo ? "yahoo" : legacyWantedVirtual ? "virtual" : "real");
       
       const migrated: AppConfig = {
         ...DEFAULT_CONFIG,
         hideBorder: parsed.hideBorder ?? DEFAULT_CONFIG.hideBorder,
         isLocked: parsed.isLocked ?? DEFAULT_CONFIG.isLocked,
         scale: parsed.scale ?? DEFAULT_CONFIG.scale,
+        tossPollingIntervalSec: parsed.tossPollingIntervalSec ?? DEFAULT_CONFIG.tossPollingIntervalSec,
         symbols: parsed.symbols ?? DEFAULT_CONFIG.symbols,
         activeSymbols: parsed.activeSymbols ?? DEFAULT_CONFIG.activeSymbols,
         tickers: parsed.tickers ?? DEFAULT_CONFIG.tickers,
-        // KIS 활성화 및 가상 모드 상태 추출
-        isVirtual: parsed.kis?.isVirtual ?? parsed.isVirtual ?? DEFAULT_CONFIG.isVirtual,
-        kisEnabled: parsed.kis?.enabled ?? parsed.enableKis ?? DEFAULT_CONFIG.kisEnabled,
+        dataSourceMode: legacyMode,
         apis: {
           kis: {
             appKey: parsed.kis?.realAppKey ?? parsed.realAppKey ?? parsed.appKey ?? "",
@@ -115,9 +127,10 @@ export function loadConfig(): AppConfig {
             appKey: parsed.kis?.virtualAppKey ?? parsed.virtualAppKey ?? "",
             appSecret: parsed.kis?.virtualAppSecret ?? parsed.virtualAppSecret ?? "",
           },
-          yahoo: {
-            enabled: parsed.fallback?.enabled ?? parsed.enableFallback ?? DEFAULT_CONFIG.apis.yahoo.enabled,
-          }
+          toss: {
+            clientId: parsed.toss?.clientId ?? parsed.toss?.client_id ?? "",
+            clientSecret: parsed.toss?.clientSecret ?? parsed.toss?.client_secret ?? "",
+          },
         }
       };
       
@@ -127,9 +140,35 @@ export function loadConfig(): AppConfig {
     }
 
     // myStocks 필드 마이그레이션 (이전 버전에 없을 수 있음)
-    if (!parsed.myStocks) {
-      parsed.myStocks = [];
+    if (!parsed.myStocks) parsed.myStocks = [];
+    if (typeof parsed.tossPollingIntervalSec !== "number") {
+      parsed.tossPollingIntervalSec = DEFAULT_CONFIG.tossPollingIntervalSec;
     }
+    if (!parsed.dataSourceMode) {
+      parsed.dataSourceMode = parsed.fallback?.enabled || parsed.enableFallback
+        ? "yahoo"
+        : parsed.isVirtual
+          ? "virtual"
+          : "real";
+    }
+
+    parsed.apis = {
+      ...DEFAULT_CONFIG.apis,
+      ...parsed.apis,
+      kis: {
+        ...DEFAULT_CONFIG.apis.kis,
+        ...parsed.apis?.kis,
+      },
+      kisVirtual: {
+        ...DEFAULT_CONFIG.apis.kisVirtual,
+        ...parsed.apis?.kisVirtual,
+      },
+      toss: {
+        ...DEFAULT_CONFIG.apis.toss,
+        ...parsed.apis?.toss,
+      },
+    };
+
     return { ...DEFAULT_CONFIG, ...parsed };
   } catch {
     return { ...DEFAULT_CONFIG };
@@ -196,22 +235,49 @@ export const Config = {
     saveConfig({ activeSymbols: symbols });
   },
 
+  /** 데이터 소스 모드 저장 */
+  setDataSourceMode(mode: DataSourceMode): void {
+    saveConfig({ dataSourceMode: mode });
+  },
+
+  setTossPollingIntervalSec(interval: number): void {
+    const safe = Math.max(3, Math.min(60, Math.round(interval)));
+    saveConfig({ tossPollingIntervalSec: safe });
+  },
+
+  getTossPollingIntervalSec(): number {
+    return loadConfig().tossPollingIntervalSec;
+  },
+
+  /** 현재 데이터 소스 모드 조회 */
+  getDataSourceMode(): DataSourceMode {
+    return loadConfig().dataSourceMode;
+  },
+
   /**
    * 현재 모드(실/모의)에 맞는 App Key & Secret 반환.
-   * 새 필드가 비어있으면 레거시 appKey/appSecret으로 폴백.
    */
   getActiveKeys(): { appKey: string; appSecret: string } {
     const c = loadConfig();
-    if (c.isVirtual) {
+    if (c.dataSourceMode === "virtual") {
       return {
         appKey: c.apis.kisVirtual.appKey,
         appSecret: c.apis.kisVirtual.appSecret,
       };
     }
-    return {
-      appKey: c.apis.kis.appKey,
-      appSecret: c.apis.kis.appSecret,
-    };
+    if (c.dataSourceMode === "real") {
+      return {
+        appKey: c.apis.kis.appKey,
+        appSecret: c.apis.kis.appSecret,
+      };
+    }
+    if (c.dataSourceMode === "toss") {
+      return {
+        appKey: c.apis.toss.clientId,
+        appSecret: c.apis.toss.clientSecret,
+      };
+    }
+    return { appKey: "", appSecret: "" };
   },
 };
 
@@ -242,5 +308,25 @@ export const KisAuthStorage = {
       const key = isVirtual ? "kis_auth_virtual" : AUTH_KEY;
       localStorage.removeItem(key);
     }
+  },
+};
+
+export const TossAuthStorage = {
+  get(): TossAuth | null {
+    try {
+      const raw = localStorage.getItem("toss_auth");
+      if (!raw) return null;
+      return JSON.parse(raw) as TossAuth;
+    } catch {
+      return null;
+    }
+  },
+
+  set(auth: TossAuth): void {
+    localStorage.setItem("toss_auth", JSON.stringify(auth));
+  },
+
+  clear(): void {
+    localStorage.removeItem("toss_auth");
   },
 };
