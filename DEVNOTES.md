@@ -38,3 +38,35 @@
 ### 효과
 - 지수 데이터가 휘발되지 않고 로컬에 쌓여 긴 그래프를 렌더링 가능
 - 장 마감 후에도 캐시된 데이터를 통해 당일 지수 흐름 확인 가능
+
+## KIS API HTML 응답 예외 처리 (2026-03-12)
+
+### 배경
+- KIS 실전/모의투자 API 폴링 과정에서 백엔드 서버 이슈나 타임아웃 발생 시, 정상적인 JSON 응답 대신 Nginx 에러 페이지(`<h1>error</h1>` 등 HTML 데이터)가 반환되는 현상 발견
+- 이로 인해 `.json()` 호출 시 `SyntaxError: Unexpected token '<'` 가 발생하며 폴링 타이머나 로직이 중단되는 문제가 확인됨.
+
+### 주요 변경 사항
+1.  **JSON 파싱 헬퍼 함수 (`safeParseJson`) 추가**
+    *   기존의 `await response.json()` 부분을 감싸, 먼저 `response.text()`로 응답값을 읽어온 뒤 `JSON.parse`를 수행하도록 변경함.
+    *   파싱 실패 시 504 Gateway Time-out 등 HTML 에러 응답임을 명확히 알 수 있는 고유한 에러 메시지(`\[HTTP 상태코드] 비정상 응답(JSON 아님): ...`)를 스로우 하도록 에러 핸들링을 고도화함.
+2.  **적용 대상**
+    *   `src/lib/kisApi.ts` 및 `src/lib/kisVirtualApi.ts` 내부의 모든 API 응답 처리부 적용
+
+### 효과
+- 간헐적인 KIS API 서버의 Nginx/HTML 응답에도 애플리케이션의 JSON 파싱 에러(SyntaxError)를 방지
+- 어떤 에러가 발생했는지 콘솔에 더 정확히 로깅되어 유지보수 용이성 향상
+
+## Tauri 빌드 경로 캐시 에러 (os error 3) 해결 (2026-04-21)
+
+### 배경
+- 프로젝트 폴더를 다른 경로(예: `D:\prj3` -> `D:\dito`)로 이동/복사한 후 `npm run tauri build` 실행 시 다음과 같은 에러 발생:
+  `failed to read plugin permissions: ... 지정된 경로를 찾을 수 없습니다. (os error 3)`
+- 원인은 이전 작업 디렉토리를 가리키는 절대 경로가 Rust 빌드 캐시(`src-tauri/target/`)에 남아있었기 때문.
+
+### 해결 방법
+1. 터미널에서 `src-tauri` 폴더로 이동 후 `cargo clean` 명령어 실행.
+2. 이를 통해 기존 절대 경로가 포함된 `target` 디렉토리(빌드 결과물)를 완전히 삭제.
+3. 루트 폴더에서 다시 `npm run tauri build`를 실행하면 현재 경로에 맞게 정상적으로 빌드가 완료됨.
+
+### 효과
+- 디렉토리 변경으로 인한 빌드 파이프라인 캐시 오류를 손쉽게 초기화하고 빌드 성공.
