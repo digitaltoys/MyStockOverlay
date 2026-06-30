@@ -16,10 +16,11 @@ import { resolveTickerInput, type ResolvedSymbolCandidate } from "../lib/symbolR
 interface MyStockPanelProps {
   symbol: string;
   myStock: MyStock | undefined;
+  currentPrice?: number | null;
   onChange: (updated: MyStock) => void;
 }
 
-function MyStockPanel({ symbol, myStock, onChange }: MyStockPanelProps) {
+function MyStockPanel({ symbol, myStock, currentPrice, onChange }: MyStockPanelProps) {
   const [price, setPrice] = useState("");
   const [qty, setQty] = useState("");
 
@@ -35,6 +36,21 @@ function MyStockPanel({ symbol, myStock, onChange }: MyStockPanelProps) {
   const avgPrice = totalShares > 0
     ? Math.round(purchases.reduce((acc, p) => acc + p.price * p.qty, 0) / totalShares)
     : 0;
+  const hasCurrentPrice = Number.isFinite(currentPrice ?? NaN) && (currentPrice ?? 0) > 0 && totalShares > 0;
+  const valuationAmount = hasCurrentPrice ? Math.round((currentPrice as number) * totalShares) : 0;
+  const profitRate = hasCurrentPrice && avgPrice > 0
+    ? (((currentPrice as number) - avgPrice) / avgPrice) * 100
+    : 0;
+  const profitAmount = hasCurrentPrice ? Math.round(((currentPrice as number) - avgPrice) * totalShares) : 0;
+  const profitColorClass = profitAmount > 0
+    ? "text-red-400"
+    : profitAmount < 0
+      ? "text-blue-400"
+      : "text-zinc-300";
+  const formatSignedRate = (value: number) => {
+    const prefix = value > 0 ? "+" : "";
+    return `${prefix}${value.toFixed(2)}%`;
+  };
 
   const addPurchase = () => {
     const p = parseFloat(price.replace(/,/g, ""));
@@ -79,15 +95,27 @@ function MyStockPanel({ symbol, myStock, onChange }: MyStockPanelProps) {
       {/* 계산 결과 요약 */}
       {totalShares > 0 && (
         <div className="grid grid-cols-2 gap-2">
-          <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-3 py-2">
-            <span className="text-[10px] text-emerald-400/70 font-black uppercase tracking-widest block">평단가</span>
-            <span className="text-base font-black text-emerald-400 tracking-tight">
+          <div className="rounded-lg border border-white/5 bg-white/[0.03] px-3 py-2">
+            <span className="text-[10px] text-zinc-500 font-semibold uppercase tracking-widest block">수익률</span>
+            <span className={`text-sm font-semibold tracking-tight ${profitColorClass}`}>
+              {hasCurrentPrice ? formatSignedRate(profitRate) : "-"}
+            </span>
+          </div>
+          <div className="rounded-lg border border-white/5 bg-white/[0.03] px-3 py-2">
+            <span className="text-[10px] text-zinc-500 font-semibold uppercase tracking-widest block">평가액</span>
+            <span className="text-sm font-semibold text-zinc-100 tracking-tight">
+              {hasCurrentPrice ? `${valuationAmount.toLocaleString("ko-KR")}원` : "-"}
+            </span>
+          </div>
+          <div className="rounded-lg border border-white/5 bg-white/[0.03] px-3 py-2">
+            <span className="text-[10px] text-zinc-500 font-semibold uppercase tracking-widest block">평단가</span>
+            <span className="text-sm font-semibold text-zinc-100 tracking-tight">
               {fmt(avgPrice)}원
             </span>
           </div>
-          <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl px-3 py-2">
-            <span className="text-[10px] text-blue-400/70 font-black uppercase tracking-widest block">보유 수량</span>
-            <span className="text-base font-black text-blue-400 tracking-tight">
+          <div className="rounded-lg border border-white/5 bg-white/[0.03] px-3 py-2">
+            <span className="text-[10px] text-zinc-500 font-semibold uppercase tracking-widest block">주식수</span>
+            <span className="text-sm font-semibold text-zinc-100 tracking-tight">
               {fmt(totalShares)}주
             </span>
           </div>
@@ -246,6 +274,7 @@ export default function ControlPanel() {
   // 종목 목록
   const [tickerSymbols, setTickerSymbols] = useState<string[]>([]);
   const [tickerDisplayNames, setTickerDisplayNames] = useState<Record<string, string>>({});
+  const [tickerCurrentPrices, setTickerCurrentPrices] = useState<Record<string, number>>({});
   const [newSymbol, setNewSymbol] = useState("");
   const [pendingCandidates, setPendingCandidates] = useState<ResolvedSymbolCandidate[]>([]);
   const [pendingQuery, setPendingQuery] = useState("");
@@ -341,9 +370,17 @@ export default function ControlPanel() {
         tickerSymbols.map(async (symbol) => {
           try {
             const priceData = await provider.fetchPrice(symbol);
-            return [symbol, priceData.displayName ?? symbol] as const;
+            return {
+              symbol,
+              displayName: priceData.displayName ?? symbol,
+              currentPrice: Number(priceData.currentPrice),
+            };
           } catch {
-            return [symbol, symbol] as const;
+            return {
+              symbol,
+              displayName: symbol,
+              currentPrice: NaN,
+            };
           }
         })
       );
@@ -351,20 +388,115 @@ export default function ControlPanel() {
       if (cancelled) return;
 
       const nextNames: Record<string, string> = {};
+      const nextPrices: Record<string, number> = {};
       for (const entry of entries) {
         if (entry.status === "fulfilled") {
-          const [symbol, displayName] = entry.value;
+          const { symbol, displayName, currentPrice } = entry.value;
           nextNames[symbol] = displayName;
+          if (Number.isFinite(currentPrice) && currentPrice > 0) {
+            nextPrices[symbol] = currentPrice;
+          }
         }
       }
 
       setTickerDisplayNames((prev) => ({ ...prev, ...nextNames }));
+      setTickerCurrentPrices((prev) => ({ ...prev, ...nextPrices }));
     };
 
     resolveTickerNames();
 
     return () => {
       cancelled = true;
+    };
+  }, [
+    tickerSymbols,
+    dataSourceMode,
+    realAppKey,
+    realAppSecret,
+    virtualAppKey,
+    virtualAppSecret,
+    tossClientId,
+    tossClientSecret,
+  ]);
+
+  useEffect(() => {
+    if (tickerSymbols.length === 0) {
+      setTickerCurrentPrices({});
+      return;
+    }
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const refreshPrices = async () => {
+      const config = Config.get();
+      const provider = createMarketDataProvider(config);
+      const entries = await Promise.allSettled(
+        tickerSymbols.map(async (symbol) => {
+          try {
+            const priceData = await provider.fetchPrice(symbol);
+            return {
+              symbol,
+              displayName: priceData.displayName ?? symbol,
+              currentPrice: Number(priceData.currentPrice),
+            };
+          } catch {
+            return {
+              symbol,
+              displayName: symbol,
+              currentPrice: NaN,
+            };
+          }
+        })
+      );
+
+      if (cancelled) return;
+
+      const nextPrices: Record<string, number> = {};
+      const nextNames: Record<string, string> = {};
+      const activeSymbols = new Set(tickerSymbols);
+
+      for (const entry of entries) {
+        if (entry.status === "fulfilled") {
+          const { symbol, displayName, currentPrice } = entry.value;
+          if (Number.isFinite(currentPrice) && currentPrice > 0) {
+            nextPrices[symbol] = currentPrice;
+          }
+          if (displayName && displayName !== symbol) {
+            nextNames[symbol] = displayName;
+          }
+        }
+      }
+
+      setTickerDisplayNames((prev) => {
+        const next: Record<string, string> = {};
+        for (const [sym, name] of Object.entries(prev)) {
+          if (activeSymbols.has(sym)) next[sym] = name;
+        }
+        for (const [sym, name] of Object.entries(nextNames)) {
+          if (activeSymbols.has(sym)) next[sym] = name;
+        }
+        return next;
+      });
+
+      setTickerCurrentPrices((prev) => {
+        const next: Record<string, number> = {};
+        for (const [sym, price] of Object.entries(prev)) {
+          if (activeSymbols.has(sym)) next[sym] = price;
+        }
+        for (const [sym, price] of Object.entries(nextPrices)) {
+          if (activeSymbols.has(sym)) next[sym] = price;
+        }
+        return next;
+      });
+      timer = setTimeout(refreshPrices, Math.max(10, Config.getTossPollingIntervalSec() || 10) * 1000);
+    };
+
+    refreshPrices();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
     };
   }, [
     tickerSymbols,
@@ -754,6 +886,7 @@ export default function ControlPanel() {
                           <MyStockPanel
                             symbol={symbol}
                             myStock={ms}
+                            currentPrice={tickerCurrentPrices[symbol] ?? null}
                             onChange={updateMyStock}
                           />
                         </div>

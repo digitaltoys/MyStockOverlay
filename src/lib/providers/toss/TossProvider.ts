@@ -364,13 +364,17 @@ export class TossProvider extends BaseProvider {
       throw new Error(`[Toss] 현재가 숫자 변환 실패: ${symbol}`);
     }
 
-    const cachedBasePrice = ChartCacheManager.getBasePrice(symbol);
-    const basePrice = cachedBasePrice && cachedBasePrice > 0 ? cachedBasePrice : currentPrice;
-    const safeBasePrice = Number.isFinite(basePrice) && basePrice > 0 ? basePrice : currentPrice;
-    const changeRate = safeBasePrice > 0 ? ((currentPrice - safeBasePrice) / safeBasePrice) * 100 : 0;
+    // 토스는 공용 차트 캐시를 기준가 소스로 쓰지 않고,
+    // 토스 일봉 캔들에서 얻은 전일 종가만 기준가로 사용한다.
+    const basePrice = await this.fetchBasePrice(symbol);
+    if (!Number.isFinite(basePrice) || basePrice <= 0) {
+      throw new Error(`[Toss] 기준가 조회 실패: ${symbol}`);
+    }
 
-    if (safeBasePrice > 0) {
-      ChartCacheManager.updateBasePrice(symbol, safeBasePrice);
+    const changeRate = ((currentPrice - basePrice) / basePrice) * 100;
+
+    if (basePrice > 0) {
+      ChartCacheManager.updateBasePrice(symbol, basePrice);
     }
 
     return {
@@ -378,9 +382,9 @@ export class TossProvider extends BaseProvider {
       displayName,
       currentPrice,
       changeRate: Number(changeRate.toFixed(2)),
-      isUp: currentPrice > safeBasePrice,
-      isDown: currentPrice < safeBasePrice,
-      basePrice: safeBasePrice,
+      isUp: currentPrice > basePrice,
+      isDown: currentPrice < basePrice,
+      basePrice,
       dataSource: "Toss",
       updatedAt: priceItem.timestamp ? new Date(priceItem.timestamp).getTime() : Date.now(),
       intradayPrices: undefined,
